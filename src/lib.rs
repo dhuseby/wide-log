@@ -16,3 +16,9 @@ pub use value::Value;
 pub use wide_event::WideEvent;
 
 pub use wide_log_macros::wide_log;
+
+#[cfg(feature = "tokio")]
+pub mod __re_exports {
+    pub use tokio;
+    pub use tower;
+}
