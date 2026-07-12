@@ -1,6 +1,8 @@
+/// Errors that can occur during wide-event operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// Serialization of a wide event to JSON failed.
     #[error("serialization failed: {0}")]
     Serialize(String),
 }

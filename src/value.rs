@@ -5,15 +5,44 @@ use smallvec::SmallVec;
 use crate::key::Key;
 use crate::wide_event::WideEvent;
 
+/// A JSON value stored in a wide event.
+///
+/// This enum is generic over the key type `K` because `Object` and `Array`
+/// variants can contain nested [`WideEvent`]s that are parameterized by `K`.
+///
+/// # Conversions
+///
+/// All primitive types implement `Into<Value<K>>`:
+///
+/// - `bool` → [`Value::Bool`]
+/// - `i64` → [`Value::I64`]
+/// - `u64` → [`Value::U64`]
+/// - `f64` → [`Value::F64`]
+/// - `&str`, `String`, `FastStr` → [`Value::String`]
+/// - `()` → [`Value::Null`]
+///
+/// The `wl_set!` and `wl_null!` macros use these conversions transparently.
+///
+/// [`WideEvent`]: crate::WideEvent
 #[derive(Debug, Clone)]
 pub enum Value<K: Key> {
+    /// JSON `null`.
     Null,
+    /// A boolean value.
     Bool(bool),
+    /// A signed 64-bit integer.
     I64(i64),
+    /// An unsigned 64-bit integer.
     U64(u64),
+    /// A 64-bit floating-point value.
     F64(f64),
+    /// A string value, stored with small-string optimization via `FastStr`.
     String(FastStr),
+    /// A JSON array of values.
     Array(SmallVec<[Box<Value<K>>; 8]>),
+    /// A nested JSON object (a boxed [`WideEvent`]).
+    ///
+    /// [`WideEvent`]: crate::WideEvent
     Object(Box<WideEvent<K>>),
 }
 

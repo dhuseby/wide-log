@@ -11,10 +11,28 @@ use crate::value::Value;
 
 type ConflictCb<K> = Arc<dyn Fn(&mut WideEvent<K>, K) + Send + Sync>;
 
+/// A wide event — a structured log record that accumulates fields throughout
+/// a request/task lifecycle and is emitted as a single JSON line on completion.
+///
+/// Fields are stored in a [`SmallVec`] with inline capacity of 24 entries —
+/// zero heap allocation in the common case. Log entries (from `info!`,
+/// `warn!`, etc.) are stored in a separate `SmallVec` with inline capacity of 8.
+///
+/// The `Serialize` impl emits all user entries first, then the `"log"` key
+/// (if any log entries have been accumulated). The `"log"` key is never
+/// declared by the user — it appears automatically.
+///
+/// This type is not constructed directly by users. The `wide_log!` macro
+/// generates an `EventKeyGuard` that owns a `WideEvent` and manages the
+/// thread-local/task-local pointer via `current()`.
 #[derive(Clone)]
 pub struct WideEvent<K: Key> {
+    /// User key-value entries (up to 24 inline).
     pub(crate) entries: SmallVec<[(K, Value<K>); 24]>,
+    /// Log entries accumulated by `info!`, `warn!`, etc. (up to 8 inline).
     pub(crate) log_entries: SmallVec<[LogEntry; 8]>,
+    /// Optional callback fired when a key's value type conflicts (e.g.,
+    /// trying to use a key as an object when it was already a string).
     pub(crate) on_type_conflict: Option<ConflictCb<K>>,
 }
 
@@ -43,6 +61,7 @@ impl<K: Key> Serialize for WideEvent<K> {
 }
 
 impl<K: Key> WideEvent<K> {
+    /// Creates a new empty wide event with no conflict callback.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -52,6 +71,11 @@ impl<K: Key> WideEvent<K> {
         }
     }
 
+    /// Creates a new empty wide event with a type-conflict callback.
+    ///
+    /// The callback is fired when `object()` is called on a key that already
+    /// has a non-object value. This allows the user to log warnings or
+    /// mutate the event on type conflicts.
     pub fn new_with_warnings<F: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static>(f: F) -> Self {
         Self {
             entries: SmallVec::new(),
@@ -68,6 +92,10 @@ impl<K: Key> WideEvent<K> {
         }
     }
 
+    /// Sets or replaces a field value at the given key.
+    ///
+    /// If the key already exists, its value is replaced. Otherwise, a new
+    /// entry is pushed. The value is converted via `Into<Value<K>>`.
     #[inline]
     pub fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
         let value = value.into();
@@ -80,6 +108,12 @@ impl<K: Key> WideEvent<K> {
         self.entries.push((key, value));
     }
 
+    /// Gets or creates a nested object at the given key, returning `&mut` to it.
+    ///
+    /// If the key already holds an `Object`, returns a reference to it.
+    /// If the key holds a non-object value, the type-conflict callback is
+    /// fired (if set), and the value is replaced with an empty object.
+    /// If the key doesn't exist, a new empty object is created.
     pub fn object(&mut self, key: K) -> &mut WideEvent<K> {
         let pos = self.entries.iter().position(|(k, _)| *k == key);
         if let Some(i) = pos {
@@ -114,8 +148,14 @@ impl<K: Key> WideEvent<K> {
         }
     }
 
-    /// Set a value at a nested path.
-    /// Traverses/creates intermediate objects as needed.
+    /// Set a value at a nested path. Traverses/creates intermediate objects
+    /// as needed.
+    ///
+    /// Example: `add_path(&[Service, Name], "my-service")` sets
+    /// `service.name = "my-service"`.
+    ///
+    /// For a single-segment path, delegates to [`add`](Self::add) with no
+    /// overhead.
     #[inline]
     pub fn add_path<V: Into<Value<K>>>(&mut self, path: &[K], value: V) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -139,6 +179,8 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Increment a numeric field by 1. Initializes to 1 if absent.
+    ///
+    /// If the field holds a non-numeric value, it is replaced with `U64(1)`.
     #[inline]
     pub fn inc(&mut self, key: K) {
         for (k, v) in &mut self.entries {
@@ -155,6 +197,10 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Decrement a numeric field by 1. Initializes to -1 if absent.
+    ///
+    /// If the field holds a `U64` that is 0, it becomes `U64(0)` (does not
+    /// go negative). If it holds a non-numeric value, it is replaced with
+    /// `I64(-1)`.
     #[inline]
     pub fn dec(&mut self, key: K) {
         for (k, v) in &mut self.entries {
@@ -171,6 +217,9 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Add a number to a numeric field. Initializes to `n` if absent.
+    ///
+    /// Uses `saturating_add_signed` for `U64` values to avoid overflow.
+    /// If the field holds a non-numeric value, it is replaced with `I64(n)`.
     #[inline]
     pub fn add_n(&mut self, key: K, n: i64) {
         for (k, v) in &mut self.entries {
@@ -187,6 +236,9 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Increment a numeric field at a nested path by 1.
+    ///
+    /// For a single-segment path, delegates to [`inc`](Self::inc) with no
+    /// overhead.
     #[inline]
     pub fn inc_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -199,6 +251,9 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Decrement a numeric field at a nested path by 1.
+    ///
+    /// For a single-segment path, delegates to [`dec`](Self::dec) with no
+    /// overhead.
     #[inline]
     pub fn dec_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -211,6 +266,9 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Add a number to a numeric field at a nested path.
+    ///
+    /// For a single-segment path, delegates to [`add_n`](Self::add_n) with
+    /// no overhead.
     #[inline]
     pub fn add_n_path(&mut self, path: &[K], n: i64) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -223,6 +281,11 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Append a log entry to the log list.
+    ///
+    /// The entry is serialized as `{"level": "...", "message": "..."}` and
+    /// appears under the `"log"` key in the JSON output. For short messages
+    /// (< ~23 bytes), `FastStr` uses small-string optimization — zero heap
+    /// allocation.
     #[inline]
     pub fn append_log_entry(&mut self, level: &'static str, message: &str) {
         self.log_entries.push(LogEntry {
@@ -231,11 +294,13 @@ impl<K: Key> WideEvent<K> {
         });
     }
 
+    /// Returns `true` if the event has no user entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Returns the number of user entries (excluding log entries).
     #[inline]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -253,6 +318,7 @@ impl<K: Key> WideEvent<K> {
         !self.log_entries.is_empty()
     }
 
+    /// Serializes the event to a JSON string via `sonic-rs` (SIMD-accelerated).
     pub fn to_json(&self) -> Result<String, Error> {
         sonic_rs::to_string(self).map_err(|e| Error::Serialize(e.to_string()))
     }

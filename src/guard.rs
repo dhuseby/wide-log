@@ -4,6 +4,20 @@ use std::time::Instant;
 use crate::key::Key;
 use crate::wide_event::WideEvent;
 
+/// RAII guard that owns a [`WideEvent`] and emits it on drop.
+///
+/// The guard starts a timer on creation. On drop, it sets the duration field
+/// (via [`Key::DURATION_PATH`]) to the elapsed milliseconds and calls the
+/// emit function with a reference to the event.
+///
+/// Implements [`Deref`] / [`DerefMut`] to [`WideEvent`] so you can call
+/// `add`, `add_path`, `inc`, etc. directly on the guard.
+///
+/// The `wide_log!` macro generates an `EventKeyGuard` that wraps this guard
+/// and manages the thread-local / task-local pointer. Users typically
+/// interact with `EventKeyGuard`, not `WideEventGuard` directly.
+///
+/// [`WideEvent`]: crate::WideEvent
 pub struct WideEventGuard<K: Key, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
@@ -17,6 +31,10 @@ impl<K: Key, F> WideEventGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
+    /// Creates a new guard with the given emit function.
+    ///
+    /// The timer starts immediately. On drop, the guard sets
+    /// `K::DURATION_PATH` to the elapsed milliseconds and calls `emit_fn`.
     pub fn new(emit_fn: F) -> Self {
         Self {
             event: WideEvent::new(),
@@ -25,6 +43,13 @@ where
         }
     }
 
+    /// Creates a new guard with the given emit function and a type-conflict
+    /// callback.
+    ///
+    /// The callback is fired when `object()` is called on a key that already
+    /// has a non-object value. See [`WideEvent::new_with_warnings`].
+    ///
+    /// [`WideEvent::new_with_warnings`]: crate::WideEvent::new_with_warnings
     pub fn new_with_warnings<G>(emit_fn: F, on_type_conflict: G) -> Self
     where
         G: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static,

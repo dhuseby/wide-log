@@ -1,10 +1,33 @@
-/// Path to the duration field (e.g. [Duration, TotalMs]).
-/// Auto-set by the guard on drop. The value is in milliseconds (u64).
+/// Trait for wide-event keys.
+///
+/// Each variant of a key enum represents a JSON key in the wide event.
+/// The `wide_log!` macro generates the enum and this trait impl
+/// automatically from the JSON structure — users do not implement this
+/// trait manually.
+///
+/// # Path-Based Duration
+///
+/// [`DURATION_PATH`](Key::DURATION_PATH) specifies the nested path to the
+/// duration field (e.g. `[Duration, TotalMs]`). The guard auto-sets this
+/// field to the elapsed time in milliseconds on drop.
+///
+/// The user does **not** define `Log`, `Level`, or `Message` variants. Log
+/// entries are handled entirely internally by a `LogEntry` type and the
+/// `log_entries` field on [`WideEvent`].
+///
+/// [`WideEvent`]: crate::WideEvent
 pub trait Key: Copy + Eq + 'static {
+    /// Returns the JSON string representation of this key.
     fn as_str(self) -> &'static str;
+
+    /// The total number of keys in the enum.
     const MAX_KEYS: usize;
+
+    /// Returns the discriminant index of this key.
     fn as_index(self) -> usize;
 
+    /// Path to the duration field (e.g. `[Duration, TotalMs]`).
+    /// Auto-set by the guard on drop. The value is in milliseconds (u64).
     const DURATION_PATH: &'static [Self];
 }
 
