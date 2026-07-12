@@ -1,14 +1,18 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod context;
+pub mod error;
+pub mod guard;
+pub mod key;
+pub mod log;
+pub mod value;
+pub mod wide_event;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[cfg(feature = "tokio")]
+pub mod middleware;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::Error;
+pub use guard::WideEventGuard;
+pub use key::Key;
+pub use value::Value;
+pub use wide_event::WideEvent;
+
+pub use wide_log_macros::wide_log;
