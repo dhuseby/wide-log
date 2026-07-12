@@ -6,7 +6,7 @@ wide_log!({
 });
 
 fn main() {
-    let _guard = EventKeyGuard::new_with_emit(|ev| {
+    let _guard = WideLogGuard::new_with_emit(|ev| {
         if let Ok(json) = ev.to_json() {
             println!("{json}");
         }

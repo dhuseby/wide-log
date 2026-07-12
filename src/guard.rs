@@ -13,12 +13,12 @@ use crate::wide_event::WideEvent;
 /// Implements [`Deref`] / [`DerefMut`] to [`WideEvent`] so you can call
 /// `add`, `add_path`, `inc`, etc. directly on the guard.
 ///
-/// The `wide_log!` macro generates an `EventKeyGuard` that wraps this guard
+/// The `wide_log!` macro generates a `WideLogGuard` that wraps this guard
 /// and manages the thread-local / task-local pointer. Users typically
-/// interact with `EventKeyGuard`, not `WideEventGuard` directly.
+/// interact with `WideLogGuard`, not `ScopedGuard` directly.
 ///
 /// [`WideEvent`]: crate::WideEvent
-pub struct WideEventGuard<K: Key, F>
+pub struct ScopedGuard<K: Key, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
@@ -27,7 +27,7 @@ where
     emit_fn: Option<F>,
 }
 
-impl<K: Key, F> WideEventGuard<K, F>
+impl<K: Key, F> ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
@@ -62,7 +62,7 @@ where
     }
 }
 
-impl<K: Key, F> Deref for WideEventGuard<K, F>
+impl<K: Key, F> Deref for ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
@@ -74,7 +74,7 @@ where
     }
 }
 
-impl<K: Key, F> DerefMut for WideEventGuard<K, F>
+impl<K: Key, F> DerefMut for ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
@@ -84,7 +84,7 @@ where
     }
 }
 
-impl<K: Key, F> Drop for WideEventGuard<K, F>
+impl<K: Key, F> Drop for ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn guard_sets_duration_path() {
         let (slot, emit) = capture_json();
-        drop(WideEventGuard::<TestKey, _>::new(emit));
+        drop(ScopedGuard::<TestKey, _>::new(emit));
         let json = slot.lock().unwrap().clone().unwrap();
         assert!(json.contains("\"duration\""));
         assert!(json.contains("\"total_ms\""));
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn guard_deref_add() {
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new(emit);
+        let mut g = ScopedGuard::<TestKey, _>::new(emit);
         g.add(TestKey::Status, "ok");
         drop(g);
         let json = slot.lock().unwrap().clone().unwrap();
@@ -144,7 +144,7 @@ mod tests {
         let emit = move |_: &WideEvent<TestKey>| {
             *c.lock().unwrap() += 1;
         };
-        drop(WideEventGuard::<TestKey, _>::new(emit));
+        drop(ScopedGuard::<TestKey, _>::new(emit));
         assert_eq!(*counter.lock().unwrap(), 1);
     }
 
@@ -153,7 +153,7 @@ mod tests {
         let counter = Arc::new(Mutex::new(0u32));
         let c = counter.clone();
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, move |_event, _key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, move |_event, _key| {
             *c.lock().unwrap() += 1;
         });
         g.add(TestKey::Details, true);
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn guard_new_with_warnings_callback_can_mutate_event() {
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, |event, _key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, |event, _key| {
             event.add(TestKey::Flag, true);
         });
         g.add(TestKey::Details, 42u64);
@@ -182,7 +182,7 @@ mod tests {
         use smallvec::smallvec;
 
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, |event, key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, |event, key| {
             let warning = format!("{} type conflict", key.as_str());
             let entry = Box::new(Value::from(warning));
             for (k, v) in &mut event.entries {
@@ -214,7 +214,7 @@ mod tests {
         let emit = move |_: &WideEvent<TestKey>| {
             *c.lock().unwrap() += 1;
         };
-        let g = WideEventGuard::<TestKey, _>::new(emit);
+        let g = ScopedGuard::<TestKey, _>::new(emit);
         std::mem::forget(g);
         assert_eq!(*counter.lock().unwrap(), 0);
     }
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn guard_duration_is_milliseconds() {
         let (slot, emit) = capture_json();
-        let g = WideEventGuard::<TestKey, _>::new(emit);
+        let g = ScopedGuard::<TestKey, _>::new(emit);
         std::thread::sleep(std::time::Duration::from_millis(2));
         drop(g);
         let json = slot.lock().unwrap().clone().unwrap();

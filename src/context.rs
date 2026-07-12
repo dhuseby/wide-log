@@ -14,7 +14,7 @@ use std::cell::Cell;
 ///    outlives any code that calls `current()` within the same scope.
 /// 2. **Set on creation, cleared on drop.** The guard's `new` sets the pointer;
 ///    its `Drop` restores the previous pointer (or null) before the inner
-///    `WideEventGuard::Drop` runs.
+///    `ScopedGuard::Drop` runs.
 /// 3. **Nested scopes** save/restore the previous pointer via `replace` and the
 ///    `prev_ptr` field on the guard.
 /// 4. **No cross-thread access.** `thread_local!` means each thread has its own

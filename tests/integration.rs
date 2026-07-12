@@ -15,7 +15,7 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 fn guard_emits_with_defaults_and_duration() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -38,7 +38,7 @@ fn guard_emits_with_defaults_and_duration() {
 fn log_macros_accumulate() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -64,7 +64,7 @@ fn log_macros_accumulate() {
 fn log_macros_with_format_args() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -84,7 +84,7 @@ fn log_macros_with_format_args() {
 fn nested_path_set() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -102,7 +102,7 @@ fn nested_path_set() {
 fn counter_inc_and_dec() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -122,7 +122,7 @@ fn counter_inc_and_dec() {
 fn wl_add_works() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -140,7 +140,7 @@ fn wl_add_works() {
 fn wl_null_works() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -164,7 +164,7 @@ fn macros_are_noop_without_guard() {
 fn default_values_set_on_creation() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -179,7 +179,7 @@ fn default_values_set_on_creation() {
 fn no_log_key_when_no_log_entries() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -195,7 +195,7 @@ fn no_log_key_when_no_log_entries() {
 fn duration_auto_added() {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let c = captured.clone();
-    let _guard = EventKeyGuard::new_with_emit(move |ev| {
+    let _guard = WideLogGuard::new_with_emit(move |ev| {
         *c.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -221,7 +221,7 @@ fn nested_sync_scopes_innermost_accessible() {
     let inner_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     let oc = outer_captured.clone();
-    let _outer = EventKeyGuard::new_with_emit(move |ev| {
+    let _outer = WideLogGuard::new_with_emit(move |ev| {
         *oc.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -230,7 +230,7 @@ fn nested_sync_scopes_innermost_accessible() {
 
     {
         let ic = inner_captured.clone();
-        let _inner = EventKeyGuard::new_with_emit(move |ev| {
+        let _inner = WideLogGuard::new_with_emit(move |ev| {
             *ic.lock().unwrap() = Some(ev.to_json().unwrap());
         });
 
@@ -266,7 +266,7 @@ fn nested_sync_scopes_outer_restored_after_inner_drop() {
     let inner_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
 
     let oc = outer_captured.clone();
-    let _outer = EventKeyGuard::new_with_emit(move |ev| {
+    let _outer = WideLogGuard::new_with_emit(move |ev| {
         *oc.lock().unwrap() = Some(ev.to_json().unwrap());
     });
 
@@ -274,7 +274,7 @@ fn nested_sync_scopes_outer_restored_after_inner_drop() {
 
     {
         let ic = inner_captured.clone();
-        let _inner = EventKeyGuard::new_with_emit(move |ev| {
+        let _inner = WideLogGuard::new_with_emit(move |ev| {
             *ic.lock().unwrap() = Some(ev.to_json().unwrap());
         });
 
@@ -305,7 +305,7 @@ fn current_is_none_without_guard() {
 
 #[test]
 fn current_is_some_with_guard() {
-    let _guard = EventKeyGuard::new_with_emit(|_| {});
+    let _guard = WideLogGuard::new_with_emit(|_| {});
     assert!(current().is_some());
     drop(_guard);
     assert!(current().is_none());

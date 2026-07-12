@@ -39,7 +39,7 @@ wide_log!({
 fn main() {
     tracing_subscriber::fmt().init();
 
-    let _guard = EventKeyGuard::new();
+    let _guard = WideLogGuard::new();
 
     wl_set!("service.name", "example-service");
     wl_inc!("requests");
@@ -90,7 +90,7 @@ fn main() {
 
     // Create guard — takes no arguments. Sets default values from JSON
     // (service.version = "1.0.0"), starts the timer:
-    let _guard = EventKeyGuard::new();
+    let _guard = WideLogGuard::new();
 
     // Set per-request field values:
     wl_set!("service.name", "example-service");
@@ -238,10 +238,10 @@ async fn main() {
 }
 ```
 
-**Why middleware, not `EventKeyGuard::new()`:** `tokio::task_local!` has no
+**Why middleware, not `WideLogGuard::new()`:** `tokio::task_local!` has no
 imperative setter — you can only set a task-local value by wrapping a future
 with `.scope(value, future)`. The middleware provides that wrapper
-automatically. `EventKeyGuard::new()` (the sync API) sets `thread_local!`,
+automatically. `WideLogGuard::new()` (the sync API) sets `thread_local!`,
 which is stale if a multi-threaded runtime moves the task to another thread.
 
 **No special setup in nested calls:** any `info!()`, `warn!()`, `wl_set!`,
@@ -260,7 +260,7 @@ wide_log!({
 });
 
 fn main() {
-    let _guard = EventKeyGuard::new_with_emit(|ev| {
+    let _guard = WideLogGuard::new_with_emit(|ev| {
         if let Ok(json) = ev.to_json() {
             println!("{json}");
         }

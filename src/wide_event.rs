@@ -23,7 +23,7 @@ type ConflictCb<K> = Arc<dyn Fn(&mut WideEvent<K>, K) + Send + Sync>;
 /// declared by the user — it appears automatically.
 ///
 /// This type is not constructed directly by users. The `wide_log!` macro
-/// generates an `EventKeyGuard` that owns a `WideEvent` and manages the
+/// generates a `WideLogGuard` that owns a `WideEvent` and manages the
 /// thread-local/task-local pointer via `current()`.
 #[derive(Clone)]
 pub struct WideEvent<K: Key> {

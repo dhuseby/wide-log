@@ -404,8 +404,8 @@ impl GenContext {
         };
 
         let guard_struct = quote! {
-            pub struct EventKeyGuard<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> {
-                inner: ::std::boxed::Box<::wide_log::WideEventGuard<EventKey, F>>,
+            pub struct WideLogGuard<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> {
+                inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
                 prev_ptr: *mut ::wide_log::WideEvent<EventKey>,
             }
 
@@ -415,11 +415,11 @@ impl GenContext {
             // `TASK_EVENT` moves with the task. The pointer is never
             // dereferenced from a different thread than the one that set it.
             unsafe impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Send
-                for EventKeyGuard<F> {}
+                for WideLogGuard<F> {}
         };
 
         let guard_new = quote! {
-            impl EventKeyGuard<fn(&::wide_log::WideEvent<EventKey>)> {
+            impl WideLogGuard<fn(&::wide_log::WideEvent<EventKey>)> {
                 pub fn new() -> Self {
                     Self::new_with_emit(default_emit)
                 }
@@ -428,12 +428,12 @@ impl GenContext {
 
         let guard_new_with_emit = if default_stmts.is_empty() {
             quote! {
-                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> EventKeyGuard<F> {
+                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> WideLogGuard<F> {
                     pub fn new_with_emit(emit_fn: F) -> Self {
-                        let inner = ::std::boxed::Box::new(::wide_log::WideEventGuard::new(emit_fn));
+                        let inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
                         let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                             use ::std::ops::Deref;
-                            let guard_ref: &::wide_log::WideEventGuard<EventKey, F> = inner.deref();
+                            let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
                             guard_ref.deref() as *const _ as *mut _
                         };
                         let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
@@ -443,9 +443,9 @@ impl GenContext {
             }
         } else {
             quote! {
-                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> EventKeyGuard<F> {
+                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> WideLogGuard<F> {
                     pub fn new_with_emit(emit_fn: F) -> Self {
-                        let mut inner = ::std::boxed::Box::new(::wide_log::WideEventGuard::new(emit_fn));
+                        let mut inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
                         {
                             use ::std::ops::DerefMut;
                             let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
@@ -453,7 +453,7 @@ impl GenContext {
                         }
                         let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                             use ::std::ops::Deref;
-                            let guard_ref: &::wide_log::WideEventGuard<EventKey, F> = inner.deref();
+                            let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
                             guard_ref.deref() as *const _ as *mut _
                         };
                         let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
@@ -464,7 +464,7 @@ impl GenContext {
         };
 
         let guard_drop = quote! {
-            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for EventKeyGuard<F> {
+            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for WideLogGuard<F> {
                 fn drop(&mut self) {
                     CURRENT_EVENT.with(|c| c.restore(self.prev_ptr));
                 }
@@ -501,7 +501,7 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let mut inner = ::std::boxed::Box::new(::wide_log::WideEventGuard::new(emit_fn));
+                    let mut inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
                     {
                         use ::std::ops::DerefMut;
                         let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
@@ -509,7 +509,7 @@ impl GenContext {
                     }
                     let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                         use ::std::ops::Deref;
-                        let guard_ref: &::wide_log::WideEventGuard<EventKey, E> = inner.deref();
+                        let guard_ref: &::wide_log::ScopedGuard<EventKey, E> = inner.deref();
                         guard_ref.deref() as *const _ as *mut _
                     };
                     let cell = ::wide_log::ContextCell::new();

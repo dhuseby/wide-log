@@ -26,7 +26,7 @@
 //!
 //! fn main() {
 //!     tracing_subscriber::fmt().init();
-//!     let _guard = EventKeyGuard::new();
+//!     let _guard = WideLogGuard::new();
 //!     wl_set!("service.name", "example-service");
 //!     wl_inc!("requests");
 //!     info!("request received");
@@ -64,7 +64,7 @@ pub mod wide_event;
 pub mod middleware;
 
 pub use error::Error;
-pub use guard::WideEventGuard;
+pub use guard::ScopedGuard;
 pub use key::Key;
 pub use value::Value;
 pub use wide_event::WideEvent;
@@ -83,7 +83,7 @@ pub use context::ContextCell;
 /// - `__wl_resolve_path` — compile-time path resolution function
 /// - Thread-local storage (`CURRENT_EVENT: ContextCell<WideEvent<EventKey>>`)
 /// - `default_emit` — serializes via `sonic_rs` and emits via `::tracing::info!`
-/// - `EventKeyGuard` — guard type with `new()` and `new_with_emit()`
+/// - `WideLogGuard` — guard type with `new()` and `new_with_emit()`
 /// - `current()` — returns the innermost active event
 /// - `scope()` / `scope_default()` (behind `tokio` feature)
 /// - `WideLogLayer` tower middleware (behind `tokio` feature)

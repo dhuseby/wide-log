@@ -1,6 +1,6 @@
 [package]
 name = "wide-log"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["David Grantham"]
 edition = "2024"
 description = "A fast wide event logging crate a la loggingsucks.com"
@@ -26,14 +26,9 @@ default = []
 tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 
 [dev-dependencies]
-criterion = { version = "0", features = ["html_reports"] }
 tracing-subscriber = { version = "0", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net"] }
 axum = { version = "0", default-features = false, features = ["http1", "tokio"] }
-
-[[bench]]
-name = "comparison"
-harness = false
 
 [[test]]
 name = "async"
