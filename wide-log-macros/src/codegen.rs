@@ -538,14 +538,23 @@ impl GenContext {
             thread_local! {
                 static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
                     const { ::wide_log::ContextCell::new() };
+
+                static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
+                    const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
             }
         };
 
         let default_emit = quote! {
             fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
-                if let Ok(json) = ev.to_json_direct() {
-                    ::tracing::info!(target: "wide_log", event = %json);
-                }
+                EMIT_BUF.with(|buf| {
+                    let mut buf = buf.borrow_mut();
+                    buf.clear();
+                    if ev.serialize_to(&mut *buf).is_ok() {
+                        // Safety: our serializer only writes valid UTF-8.
+                        let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
+                        ::tracing::info!(target: "wide_log", event = %json);
+                    }
+                });
             }
         };
 
