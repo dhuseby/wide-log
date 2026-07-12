@@ -227,16 +227,15 @@ mod tests {
         let (slot, emit) = capture_json();
         let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, key| {
             let warning = format!("{} type conflict", key.as_str());
-            let entry = Box::new(Value::from(warning));
+            let entry = Value::from(warning);
             let idx = TestKey::Tag.as_index();
-            match &mut event.values[idx] {
-                Some(Value::Array(arr)) => {
+            if let Some(v) = &mut event.values[idx] {
+                if let Some(arr) = v.as_array_mut() {
                     arr.push(entry);
-                }
-                _ => {
-                    event.values[idx] = Some(Value::Array(smallvec![entry]));
+                    return;
                 }
             }
+            event.values[idx] = Some(Value::from_array(smallvec![entry]));
         });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);

@@ -847,7 +847,7 @@ impl GenContext {
             macro_rules! info {
                 ($msg:literal) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("info", $msg);
+                        ev.append_log_entry_static("info", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
@@ -861,7 +861,7 @@ impl GenContext {
             macro_rules! warn {
                 ($msg:literal) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("warn", $msg);
+                        ev.append_log_entry_static("warn", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
@@ -875,7 +875,7 @@ impl GenContext {
             macro_rules! error {
                 ($msg:literal) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("error", $msg);
+                        ev.append_log_entry_static("error", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
@@ -889,7 +889,7 @@ impl GenContext {
             macro_rules! debug {
                 ($msg:literal) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("debug", $msg);
+                        ev.append_log_entry_static("debug", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
@@ -903,7 +903,7 @@ impl GenContext {
             macro_rules! trace {
                 ($msg:literal) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("trace", $msg);
+                        ev.append_log_entry_static("trace", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {

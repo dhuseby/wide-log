@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use crate::error::Error;
 use crate::key::Key;
 use crate::log::LogEntry;
-use crate::value::Value;
+use crate::value::{Value, ValueTag};
 
 pub type ConflictFn<K> = fn(&mut WideEvent<K>, K);
 
@@ -72,19 +72,21 @@ impl<K: Key> WideEvent<K> {
         let idx = key.as_index();
         let needs_replace = match &self.values[idx] {
             None => true,
-            Some(Value::Object(_)) => false,
-            Some(_) => true,
+            Some(v) => !v.is_object(),
         };
         if needs_replace {
             if let Some(cb) = self.on_type_conflict {
-                if !matches!(&self.values[idx], None) {
+                if self.values[idx].is_some() {
                     cb(self, key);
                 }
             }
-            self.values[idx] = Some(Value::Object(Box::new(self.new_child())));
+            self.values[idx] = Some(Value::from_object(self.new_child()));
         }
+        // Safety: we just ensured it's an Object.
         match &mut self.values[idx] {
-            Some(Value::Object(child)) => child,
+            Some(v) if v.tag() == ValueTag::Object => unsafe {
+                &mut v.data.object
+            },
             _ => unreachable!(),
         }
     }
@@ -125,40 +127,52 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn inc(&mut self, key: K) {
         let idx = key.as_index();
-        self.values[idx] = Some(match &self.values[idx] {
-            Some(Value::U64(n)) => Value::U64(*n + 1),
-            Some(Value::I64(n)) => Value::I64(*n + 1),
-            _ => Value::U64(1),
-        });
+        let new_val = match &self.values[idx] {
+            Some(v) => match v.tag() {
+                ValueTag::U64 => Value::from(unsafe { v.data.u } + 1),
+                ValueTag::I64 => Value::from(unsafe { v.data.i } + 1),
+                _ => Value::from(1u64),
+            },
+            None => Value::from(1u64),
+        };
+        self.values[idx] = Some(new_val);
     }
 
     /// Decrement a numeric field by 1. Initializes to -1 if absent.
     #[inline]
     pub fn dec(&mut self, key: K) {
         let idx = key.as_index();
-        self.values[idx] = Some(match &self.values[idx] {
-            Some(Value::U64(n)) if *n > 0 => Value::U64(*n - 1),
-            Some(Value::U64(_)) => Value::U64(0),
-            Some(Value::I64(n)) => Value::I64(*n - 1),
-            _ => Value::I64(-1),
-        });
+        let new_val = match &self.values[idx] {
+            Some(v) => match v.tag() {
+                ValueTag::U64 => {
+                    let n = unsafe { v.data.u };
+                    if n > 0 { Value::from(n - 1) } else { Value::from(0u64) }
+                }
+                ValueTag::I64 => Value::from(unsafe { v.data.i } - 1),
+                _ => Value::from(-1i64),
+            },
+            None => Value::from(-1i64),
+        };
+        self.values[idx] = Some(new_val);
     }
 
     /// Add a number to a numeric field. Initializes to `n` if absent.
     #[inline]
     pub fn add_n(&mut self, key: K, n: i64) {
         let idx = key.as_index();
-        self.values[idx] = Some(match &self.values[idx] {
-            Some(Value::U64(x)) => Value::U64(x.saturating_add_signed(n)),
-            Some(Value::I64(x)) => Value::I64(*x + n),
-            _ => {
-                if n >= 0 {
-                    Value::U64(n as u64)
-                } else {
-                    Value::I64(n)
+        let new_val = match &self.values[idx] {
+            Some(v) => match v.tag() {
+                ValueTag::U64 => Value::from(unsafe { v.data.u }.saturating_add_signed(n)),
+                ValueTag::I64 => Value::from(unsafe { v.data.i } + n),
+                _ => {
+                    if n >= 0 { Value::from(n as u64) } else { Value::from(n) }
                 }
+            },
+            None => {
+                if n >= 0 { Value::from(n as u64) } else { Value::from(n) }
             }
-        });
+        };
+        self.values[idx] = Some(new_val);
     }
 
     #[inline]
@@ -196,10 +210,18 @@ impl<K: Key> WideEvent<K> {
 
     #[inline]
     pub fn append_log_entry(&mut self, level: &'static str, message: &str) {
-        use faststr::FastStr;
         self.log_entries.push(LogEntry {
             level,
-            message: FastStr::new(message),
+            message: crate::log::LogMsg::Owned(faststr::FastStr::new(message)),
+        });
+    }
+
+    /// Append a log entry with a `&'static str` message — zero-copy.
+    #[inline]
+    pub fn append_log_entry_static(&mut self, level: &'static str, message: &'static str) {
+        self.log_entries.push(LogEntry {
+            level,
+            message: crate::log::LogMsg::Static(message),
         });
     }
 
@@ -271,7 +293,6 @@ impl<K: Key> std::fmt::Debug for WideEvent<K> {
 mod tests {
     use super::*;
     use crate::key::test_support::TestKey;
-    use crate::value::Value;
 
     // 25-variant key used to verify the inline SmallVec capacity.
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -424,7 +445,7 @@ mod tests {
         let mut e = WideEvent::<TestKey>::new();
         e.add(TestKey::Details, true);
         e.object(TestKey::Details).add(TestKey::Status, "ok");
-        assert!(matches!(e.values[TestKey::Details.as_index()], Some(Value::Object(_))));
+        assert!(matches!(&e.values[TestKey::Details.as_index()], Some(v) if v.is_object()));
     }
 
     #[test]
