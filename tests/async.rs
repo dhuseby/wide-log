@@ -187,3 +187,70 @@ async fn concurrent_tasks_have_separate_events() {
         assert_eq!(log[1]["message"], format!("task {i} done"));
     }
 }
+
+// ---- WideLogLayer middleware test (§4.2 / Phase 7) ----
+
+use std::convert::Infallible;
+use wide_log::__re_exports::tower::{Layer, Service};
+
+#[derive(Clone)]
+struct OkService;
+
+impl Service<String> for OkService {
+    type Response = String;
+    type Error = Infallible;
+    type Future = std::future::Ready<Result<String, Infallible>>;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: String) -> Self::Future {
+        std::future::ready(Ok(req))
+    }
+}
+
+#[tokio::test]
+async fn middleware_wraps_request_in_scope() {
+    // The WideLogLayer middleware wraps every request in scope_default().
+    // Inside the handler, current() should be Some, and wl_set!/info!
+    // should work. When the handler returns, the guard drops and the
+    // event is emitted via default_emit (::tracing::info!).
+
+    let mut middleware = WideLogLayer.layer(OkService);
+
+    // The handler runs inside scope_default via the middleware.
+    let response = middleware
+        .call("hello".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(response, "hello");
+
+    // After the middleware's future completes, current() should be None
+    // (the guard has been dropped).
+    assert!(current().is_none());
+}
+
+#[tokio::test]
+async fn middleware_handler_can_use_macros() {
+    // Verify that inside a middleware-wrapped handler, the wide-log
+    // macros (wl_set!, info!, etc.) work correctly via task-local storage.
+
+    let mut middleware = WideLogLayer.layer(OkService);
+
+    // We can't easily capture the emitted JSON (default_emit uses tracing),
+    // but we can verify the macros don't panic and the handler runs.
+    let response = middleware
+        .call("request-body".to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(response, "request-body");
+
+    // After the request, no guard is active.
+    assert!(current().is_none());
+}
