@@ -65,10 +65,7 @@ where
     /// has a non-object value. See [`WideEvent::new_with_warnings`].
     ///
     /// [`WideEvent::new_with_warnings`]: crate::WideEvent::new_with_warnings
-    pub fn new_with_warnings<G>(emit_fn: F, tz: Tz, on_type_conflict: G) -> Self
-    where
-        G: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static,
-    {
+    pub fn new_with_warnings(emit_fn: F, tz: Tz, on_type_conflict: crate::wide_event::ConflictFn<K>) -> Self {
         Self {
             event: WideEvent::new_with_warnings(on_type_conflict),
             start: Instant::now(),
@@ -106,10 +103,18 @@ where
 {
     fn drop(&mut self) {
         let duration_ms = self.start.elapsed().as_millis() as u64;
-        self.event.add_path(K::DURATION_PATH, duration_ms);
-        let now = chrono::Utc::now().with_timezone(&self.tz);
-        let ts = now.to_rfc3339();
-        self.event.add_path(K::TIMESTAMP_PATH, ts);
+        // Fast path for common 2-segment DURATION_PATH and TIMESTAMP_PATH
+        if K::DURATION_PATH.len() == 2 && K::TIMESTAMP_PATH.len() == 2 {
+            let dur_parent = self.event.object(K::DURATION_PATH[0]);
+            dur_parent.add(K::DURATION_PATH[1], duration_ms);
+            let ts_parent = self.event.object(K::TIMESTAMP_PATH[0]);
+            let now = chrono::Utc::now().with_timezone(&self.tz);
+            ts_parent.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
+        } else {
+            self.event.add_path(K::DURATION_PATH, duration_ms);
+            let now = chrono::Utc::now().with_timezone(&self.tz);
+            self.event.add_path(K::TIMESTAMP_PATH, now.to_rfc3339());
+        }
         if let Some(emit) = self.emit_fn.take() {
             emit(&self.event);
         }
@@ -184,16 +189,20 @@ mod tests {
 
     #[test]
     fn guard_new_with_warnings_fires_callback() {
-        let counter = Arc::new(Mutex::new(0u32));
-        let c = counter.clone();
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        COUNTER.store(0, Ordering::SeqCst);
+
+        fn cb(_event: &mut WideEvent<TestKey>, _key: TestKey) {
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+        }
+
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, move |_event, _key| {
-            *c.lock().unwrap() += 1;
-        });
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, cb);
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);
         drop(g);
-        assert_eq!(*counter.lock().unwrap(), 1);
+        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
         assert!(slot.lock().unwrap().is_some());
     }
 
@@ -219,17 +228,15 @@ mod tests {
         let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, key| {
             let warning = format!("{} type conflict", key.as_str());
             let entry = Box::new(Value::from(warning));
-            for (k, v) in &mut event.entries {
-                if *k == TestKey::Tag
-                    && let Value::Array(arr) = v
-                {
+            let idx = TestKey::Tag.as_index();
+            match &mut event.values[idx] {
+                Some(Value::Array(arr)) => {
                     arr.push(entry);
-                    return;
+                }
+                _ => {
+                    event.values[idx] = Some(Value::Array(smallvec![entry]));
                 }
             }
-            event
-                .entries
-                .push((TestKey::Tag, Value::Array(smallvec![entry])));
         });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);

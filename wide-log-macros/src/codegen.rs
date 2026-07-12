@@ -502,6 +502,11 @@ impl GenContext {
             }
         };
 
+        let all_key_idents: Vec<TokenStream2> = enum_variants
+            .iter()
+            .map(|v| quote! { EventKey::#v })
+            .collect();
+
         let key_impl = quote! {
             impl ::wide_log::Key for EventKey {
                 fn as_str(self) -> &'static str {
@@ -510,6 +515,7 @@ impl GenContext {
                     }
                 }
                 const MAX_KEYS: usize = #max_keys;
+                const KEYS: &'static [Self] = &[#(#all_key_idents),*];
                 fn as_index(self) -> usize { self as usize }
                 const DURATION_PATH: &'static [Self] = &[#(#duration_path_idents),*];
                 const TIMESTAMP_PATH: &'static [Self] = &[#(#timestamp_path_idents),*];

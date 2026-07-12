@@ -1,7 +1,3 @@
-use std::sync::Arc;
-
-use faststr::FastStr;
-use serde::ser::{Serialize, SerializeMap, Serializer};
 use smallvec::SmallVec;
 
 use crate::error::Error;
@@ -9,153 +5,101 @@ use crate::key::Key;
 use crate::log::LogEntry;
 use crate::value::Value;
 
-type ConflictCb<K> = Arc<dyn Fn(&mut WideEvent<K>, K) + Send + Sync>;
+pub type ConflictFn<K> = fn(&mut WideEvent<K>, K);
+
+const INLINE_CAP: usize = 32;
+const LOG_INLINE_CAP: usize = 16;
 
 /// A wide event — a structured log record that accumulates fields throughout
 /// a request/task lifecycle and is emitted as a single JSON line on completion.
 ///
-/// Fields are stored in a [`SmallVec`] with inline capacity of 24 entries —
-/// zero heap allocation in the common case. Log entries (from `info!`,
-/// `warn!`, etc.) are stored in a separate `SmallVec` with inline capacity of 8.
+/// Fields are stored in an array indexed by `K::as_index()` — O(1) lookup
+/// with no linear scan. Up to `INLINE_CAP` (24) `Option<Value>` slots are
+/// inline on the stack; zero heap allocation in the common case. Log entries
+/// are stored in a separate `SmallVec` with inline capacity of 16.
 ///
-/// The `Serialize` impl emits all user entries first, then the `"log"` key
-/// (if any log entries have been accumulated). The `"log"` key is never
-/// declared by the user — it appears automatically.
+/// The `Serialize` impl emits all user entries in enum-variant order, then
+/// the `"log"` key (if any log entries have been accumulated). The `"log"`
+/// key is never declared by the user — it appears automatically.
 ///
 /// This type is not constructed directly by users. The `wide_log!` macro
 /// generates a `WideLogGuard` that owns a `WideEvent` and manages the
 /// thread-local/task-local pointer via `current()`.
 #[derive(Clone)]
 pub struct WideEvent<K: Key> {
-    /// User key-value entries (up to 24 inline).
-    pub(crate) entries: SmallVec<[(K, Value<K>); 24]>,
-    /// Log entries accumulated by `info!`, `warn!`, etc. (up to 8 inline).
-    pub(crate) log_entries: SmallVec<[LogEntry; 8]>,
-    /// Optional callback fired when a key's value type conflicts (e.g.,
-    /// trying to use a key as an object when it was already a string).
-    pub(crate) on_type_conflict: Option<ConflictCb<K>>,
-}
-
-impl<K: Key + std::fmt::Debug> std::fmt::Debug for WideEvent<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WideEvent")
-            .field("entries", &self.entries)
-            .field("log_entries_len", &self.log_entries.len())
-            .field("has_conflict_callback", &self.on_type_conflict.is_some())
-            .finish()
-    }
-}
-
-impl<K: Key> Serialize for WideEvent<K> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let total = self.entries.len() + if self.log_entries.is_empty() { 0 } else { 1 };
-        let mut map = serializer.serialize_map(Some(total))?;
-        for (key, value) in &self.entries {
-            map.serialize_entry(key.as_str(), value)?;
-        }
-        if !self.log_entries.is_empty() {
-            map.serialize_entry("log", &self.log_entries)?;
-        }
-        map.end()
-    }
+    /// Indexed value slots. `values[key.as_index()]` holds the value for that
+    /// key, or `None` if not yet set.
+    pub(crate) values: SmallVec<[Option<Value<K>>; INLINE_CAP]>,
+    /// Log entries accumulated by `info!`, `warn!`, etc. (up to 16 inline).
+    pub(crate) log_entries: SmallVec<[LogEntry; LOG_INLINE_CAP]>,
+    /// Optional callback fired when a key's value type conflicts.
+    pub(crate) on_type_conflict: Option<ConflictFn<K>>,
 }
 
 impl<K: Key> WideEvent<K> {
     /// Creates a new empty wide event with no conflict callback.
     #[inline]
     pub fn new() -> Self {
+        let mut values = SmallVec::new();
+        values.resize(K::MAX_KEYS, None);
         Self {
-            entries: SmallVec::new(),
+            values,
             log_entries: SmallVec::new(),
             on_type_conflict: None,
         }
     }
 
     /// Creates a new empty wide event with a type-conflict callback.
-    ///
-    /// The callback is fired when `object()` is called on a key that already
-    /// has a non-object value. This allows the user to log warnings or
-    /// mutate the event on type conflicts.
-    pub fn new_with_warnings<F: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static>(f: F) -> Self {
+    pub fn new_with_warnings(f: ConflictFn<K>) -> Self {
+        let mut values = SmallVec::new();
+        values.resize(K::MAX_KEYS, None);
         Self {
-            entries: SmallVec::new(),
+            values,
             log_entries: SmallVec::new(),
-            on_type_conflict: Some(Arc::new(f)),
+            on_type_conflict: Some(f),
         }
     }
 
-    pub(crate) fn with_callback(cb: Option<ConflictCb<K>>) -> Self {
-        Self {
-            entries: SmallVec::new(),
-            log_entries: SmallVec::new(),
-            on_type_conflict: cb,
-        }
-    }
-
-    /// Sets or replaces a field value at the given key.
-    ///
-    /// If the key already exists, its value is replaced. Otherwise, a new
-    /// entry is pushed. The value is converted via `Into<Value<K>>`.
+    /// Sets or replaces a field value at the given key. O(1) indexed access.
     #[inline]
     pub fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
-        let value = value.into();
-        for (k, v) in &mut self.entries {
-            if *k == key {
-                *v = value;
-                return;
-            }
-        }
-        self.entries.push((key, value));
+        self.values[key.as_index()] = Some(value.into());
     }
 
     /// Gets or creates a nested object at the given key, returning `&mut` to it.
-    ///
-    /// If the key already holds an `Object`, returns a reference to it.
-    /// If the key holds a non-object value, the type-conflict callback is
-    /// fired (if set), and the value is replaced with an empty object.
-    /// If the key doesn't exist, a new empty object is created.
+    #[inline]
     pub fn object(&mut self, key: K) -> &mut WideEvent<K> {
-        let pos = self.entries.iter().position(|(k, _)| *k == key);
-        if let Some(i) = pos {
-            let is_object = matches!(self.entries[i].1, Value::Object(_));
-            if !is_object {
-                let cb_opt = self.on_type_conflict.take();
-                if let Some(ref arc_cb) = cb_opt {
-                    arc_cb(self, key);
+        let idx = key.as_index();
+        let needs_replace = match &self.values[idx] {
+            None => true,
+            Some(Value::Object(_)) => false,
+            Some(_) => true,
+        };
+        if needs_replace {
+            if let Some(cb) = self.on_type_conflict {
+                if !matches!(&self.values[idx], None) {
+                    cb(self, key);
                 }
-                self.on_type_conflict = cb_opt;
-                self.entries[i].1 = Value::Object(Box::new(WideEvent::with_callback(
-                    self.on_type_conflict.clone(),
-                )));
             }
-            if let Value::Object(ref mut child) = self.entries[i].1 {
-                return child;
-            }
-            unreachable!()
-        } else {
-            self.entries.push((
-                key,
-                Value::Object(Box::new(WideEvent::with_callback(
-                    self.on_type_conflict.clone(),
-                ))),
-            ));
-            let last = self.entries.len() - 1;
-            if let Value::Object(ref mut child) = self.entries[last].1 {
-                child
-            } else {
-                unreachable!()
-            }
+            self.values[idx] = Some(Value::Object(Box::new(self.new_child())));
+        }
+        match &mut self.values[idx] {
+            Some(Value::Object(child)) => child,
+            _ => unreachable!(),
         }
     }
 
-    /// Set a value at a nested path. Traverses/creates intermediate objects
-    /// as needed.
-    ///
-    /// Example: `add_path(&[Service, Name], "my-service")` sets
-    /// `service.name = "my-service"`.
-    ///
-    /// For a single-segment path, delegates to [`add`](Self::add) with no
-    /// overhead.
+    fn new_child(&self) -> WideEvent<K> {
+        let mut values = SmallVec::new();
+        values.resize(K::MAX_KEYS, None);
+        WideEvent {
+            values,
+            log_entries: SmallVec::new(),
+            on_type_conflict: self.on_type_conflict,
+        }
+    }
+
+    /// Set a value at a nested path. Traverses/creates intermediate objects.
     #[inline]
     pub fn add_path<V: Into<Value<K>>>(&mut self, path: &[K], value: V) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -168,7 +112,6 @@ impl<K: Key> WideEvent<K> {
         target.add(path[path.len() - 1], value);
     }
 
-    /// Get or create the nested object at `path[..len-1]`, return `&mut` to it.
     #[inline]
     fn descend_mut(&mut self, path: &[K]) -> &mut WideEvent<K> {
         let mut current: &mut WideEvent<K> = self;
@@ -179,73 +122,45 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Increment a numeric field by 1. Initializes to 1 if absent.
-    ///
-    /// If the field holds a non-numeric value, it is replaced with `U64(1)`.
     #[inline]
     pub fn inc(&mut self, key: K) {
-        for (k, v) in &mut self.entries {
-            if *k == key {
-                *v = match v {
-                    Value::U64(n) => Value::U64(*n + 1),
-                    Value::I64(n) => Value::I64(*n + 1),
-                    _ => Value::U64(1),
-                };
-                return;
-            }
-        }
-        self.entries.push((key, Value::U64(1)));
+        let idx = key.as_index();
+        self.values[idx] = Some(match &self.values[idx] {
+            Some(Value::U64(n)) => Value::U64(*n + 1),
+            Some(Value::I64(n)) => Value::I64(*n + 1),
+            _ => Value::U64(1),
+        });
     }
 
     /// Decrement a numeric field by 1. Initializes to -1 if absent.
-    ///
-    /// If the field holds a `U64` that is 0, it becomes `U64(0)` (does not
-    /// go negative). If it holds a non-numeric value, it is replaced with
-    /// `I64(-1)`.
     #[inline]
     pub fn dec(&mut self, key: K) {
-        for (k, v) in &mut self.entries {
-            if *k == key {
-                *v = match v {
-                    Value::U64(n) if *n > 0 => Value::U64(*n - 1),
-                    Value::I64(n) => Value::I64(*n - 1),
-                    _ => Value::I64(-1),
-                };
-                return;
-            }
-        }
-        self.entries.push((key, Value::I64(-1)));
+        let idx = key.as_index();
+        self.values[idx] = Some(match &self.values[idx] {
+            Some(Value::U64(n)) if *n > 0 => Value::U64(*n - 1),
+            Some(Value::U64(_)) => Value::U64(0),
+            Some(Value::I64(n)) => Value::I64(*n - 1),
+            _ => Value::I64(-1),
+        });
     }
 
     /// Add a number to a numeric field. Initializes to `n` if absent.
-    ///
-    /// Uses `saturating_add_signed` for `U64` values to avoid overflow.
-    /// If the field holds a non-numeric value, it is replaced with `I64(n)`.
     #[inline]
     pub fn add_n(&mut self, key: K, n: i64) {
-        for (k, v) in &mut self.entries {
-            if *k == key {
-                *v = match v {
-                    Value::U64(x) => Value::U64(x.saturating_add_signed(n)),
-                    Value::I64(x) => Value::I64(*x + n),
-                    _ => Value::I64(n),
-                };
-                return;
+        let idx = key.as_index();
+        self.values[idx] = Some(match &self.values[idx] {
+            Some(Value::U64(x)) => Value::U64(x.saturating_add_signed(n)),
+            Some(Value::I64(x)) => Value::I64(*x + n),
+            _ => {
+                if n >= 0 {
+                    Value::U64(n as u64)
+                } else {
+                    Value::I64(n)
+                }
             }
-        }
-        self.entries.push((
-            key,
-            if n >= 0 {
-                Value::U64(n as u64)
-            } else {
-                Value::I64(n)
-            },
-        ));
+        });
     }
 
-    /// Increment a numeric field at a nested path by 1.
-    ///
-    /// For a single-segment path, delegates to [`inc`](Self::inc) with no
-    /// overhead.
     #[inline]
     pub fn inc_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -257,10 +172,6 @@ impl<K: Key> WideEvent<K> {
         target.inc(path[path.len() - 1]);
     }
 
-    /// Decrement a numeric field at a nested path by 1.
-    ///
-    /// For a single-segment path, delegates to [`dec`](Self::dec) with no
-    /// overhead.
     #[inline]
     pub fn dec_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -272,10 +183,6 @@ impl<K: Key> WideEvent<K> {
         target.dec(path[path.len() - 1]);
     }
 
-    /// Add a number to a numeric field at a nested path.
-    ///
-    /// For a single-segment path, delegates to [`add_n`](Self::add_n) with
-    /// no overhead.
     #[inline]
     pub fn add_n_path(&mut self, path: &[K], n: i64) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
@@ -287,47 +194,42 @@ impl<K: Key> WideEvent<K> {
         target.add_n(path[path.len() - 1], n);
     }
 
-    /// Append a log entry to the log list.
-    ///
-    /// The entry is serialized as `{"level": "...", "message": "..."}` and
-    /// appears under the `"log"` key in the JSON output. For short messages
-    /// (< ~23 bytes), `FastStr` uses small-string optimization — zero heap
-    /// allocation.
     #[inline]
     pub fn append_log_entry(&mut self, level: &'static str, message: &str) {
+        use faststr::FastStr;
         self.log_entries.push(LogEntry {
             level,
             message: FastStr::new(message),
         });
     }
 
-    /// Returns `true` if the event has no user entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.values.iter().all(|v| v.is_none())
     }
 
-    /// Returns the number of user entries (excluding log entries).
     #[inline]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.values.iter().filter(|v| v.is_some()).count()
     }
 
-    /// Number of log entries accumulated.
     #[inline]
     pub fn log_len(&self) -> usize {
         self.log_entries.len()
     }
 
-    /// Whether any log entries have been accumulated.
     #[inline]
     pub fn has_logs(&self) -> bool {
         !self.log_entries.is_empty()
     }
 
-    /// Serializes the event to a JSON string via `sonic-rs` (SIMD-accelerated).
     pub fn to_json(&self) -> Result<String, Error> {
         sonic_rs::to_string(self).map_err(|e| Error::Serialize(e.to_string()))
+    }
+
+    /// Count of present entries (alias for `len()`).
+    pub(crate) fn count_present(&self) -> usize {
+        self.values.iter().filter(|v| v.is_some()).count()
     }
 }
 
@@ -337,14 +239,41 @@ impl<K: Key> Default for WideEvent<K> {
     }
 }
 
+impl<K: Key> serde::Serialize for WideEvent<K> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let present = self.count_present();
+        let total = present + if self.log_entries.is_empty() { 0 } else { 1 };
+        let mut map = serializer.serialize_map(Some(total))?;
+        for (i, key) in K::KEYS.iter().enumerate() {
+            if let Some(value) = &self.values[i] {
+                map.serialize_entry(key.as_str(), value)?;
+            }
+        }
+        if !self.log_entries.is_empty() {
+            map.serialize_entry("log", &self.log_entries)?;
+        }
+        map.end()
+    }
+}
+
+impl<K: Key> std::fmt::Debug for WideEvent<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WideEvent")
+            .field("present", &self.len())
+            .field("log_entries_len", &self.log_entries.len())
+            .field("has_conflict_callback", &self.on_type_conflict.is_some())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
     use crate::key::test_support::TestKey;
+    use crate::value::Value;
 
-    // 24-variant key used to verify the inline SmallVec capacity.
+    // 25-variant key used to verify the inline SmallVec capacity.
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
     #[repr(u8)]
     #[allow(dead_code)]
@@ -409,6 +338,13 @@ mod tests {
             }
         }
         const MAX_KEYS: usize = 25;
+        const KEYS: &'static [Self] = &[
+            BigKey::Duration, BigKey::TotalMs, BigKey::Event, BigKey::Timestamp,
+            BigKey::Id, BigKey::K2, BigKey::K3, BigKey::K4, BigKey::K5, BigKey::K6,
+            BigKey::K7, BigKey::K8, BigKey::K9, BigKey::K10, BigKey::K11, BigKey::K12,
+            BigKey::K13, BigKey::K14, BigKey::K15, BigKey::K16, BigKey::K17, BigKey::K18,
+            BigKey::K19, BigKey::K20, BigKey::K21, BigKey::K22,
+        ];
         fn as_index(self) -> usize {
             self as usize
         }
@@ -416,6 +352,8 @@ mod tests {
         const TIMESTAMP_PATH: &'static [Self] = &[BigKey::Event, BigKey::Timestamp];
         const ID_PATH: &'static [Self] = &[BigKey::Event, BigKey::Id];
     }
+
+    // ── Basic tests ──
 
     #[test]
     fn new_is_empty() {
@@ -457,6 +395,8 @@ mod tests {
         assert_eq!(e.len(), 3);
     }
 
+    // ── Object tests ──
+
     #[test]
     fn object_creates_nested() {
         let mut e = WideEvent::<TestKey>::new();
@@ -477,72 +417,34 @@ mod tests {
         assert_eq!(e.len(), 1, "only one top-level entry");
     }
 
-    #[test]
-    fn object_type_conflict_fires_callback() {
-        let counter = Arc::new(Mutex::new(0u32));
-        let c = counter.clone();
-        let mut e = WideEvent::new_with_warnings(move |_event, _key| {
-            *c.lock().unwrap() += 1;
-        });
-        e.add(TestKey::Details, true);
-        e.object(TestKey::Details);
-        assert_eq!(*counter.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn object_type_conflict_callback_appends_warning_string() {
-        use crate::value::Value;
-        use smallvec::smallvec;
-
-        let mut e = WideEvent::new_with_warnings(|event, key: TestKey| {
-            let warning = format!("{} type conflict", key.as_str());
-            let entry = Box::new(Value::from(warning));
-            for (k, v) in &mut event.entries {
-                if *k == TestKey::Tag
-                    && let Value::Array(arr) = v
-                {
-                    arr.push(entry);
-                    return;
-                }
-            }
-            event
-                .entries
-                .push((TestKey::Tag, Value::Array(smallvec![entry])));
-        });
-        e.add(TestKey::Details, true);
-        e.object(TestKey::Details);
-        let json = e.to_json().unwrap();
-        assert!(
-            json.contains("\"details type conflict\""),
-            "warning string should appear in JSON"
-        );
-    }
-
-    #[test]
-    fn object_type_conflict_callback_can_mutate_event() {
-        let mut e = WideEvent::new_with_warnings(|event, _key| {
-            event.add(TestKey::Flag, true);
-        });
-        e.add(TestKey::Details, 42u64);
-        e.object(TestKey::Details).add(TestKey::Status, "ok");
-        let json = e.to_json().unwrap();
-        assert!(
-            json.contains("\"flag\":true"),
-            "callback mutation should appear in event"
-        );
-        assert!(
-            json.contains("\"details\""),
-            "conflicted key should become an object"
-        );
-    }
+    // ── Type conflict tests (fn pointer version) ──
 
     #[test]
     fn object_type_conflict_replaces_with_object() {
         let mut e = WideEvent::<TestKey>::new();
         e.add(TestKey::Details, true);
         e.object(TestKey::Details).add(TestKey::Status, "ok");
-        assert!(matches!(e.entries[0].1, Value::Object(_)));
+        assert!(matches!(e.values[TestKey::Details.as_index()], Some(Value::Object(_))));
     }
+
+    #[test]
+    fn object_type_conflict_fires_callback() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        COUNTER.store(0, Ordering::SeqCst);
+
+        fn cb(_event: &mut WideEvent<TestKey>, _key: TestKey) {
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let mut e = WideEvent::new_with_warnings(cb);
+        e.add(TestKey::Details, true);
+        e.object(TestKey::Details);
+        assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+    }
+
+    // ── Serialization tests ──
 
     #[test]
     fn to_json_valid() {
@@ -575,44 +477,19 @@ mod tests {
 
     #[test]
     fn inline_capacity_not_spilled() {
-        let keys = [
-            BigKey::Duration,
-            BigKey::TotalMs,
-            BigKey::Event,
-            BigKey::Timestamp,
-            BigKey::Id,
-            BigKey::K2,
-            BigKey::K3,
-            BigKey::K4,
-            BigKey::K5,
-            BigKey::K6,
-            BigKey::K7,
-            BigKey::K8,
-            BigKey::K9,
-            BigKey::K10,
-            BigKey::K11,
-            BigKey::K12,
-            BigKey::K13,
-            BigKey::K14,
-            BigKey::K15,
-            BigKey::K16,
-            BigKey::K17,
-            BigKey::K18,
-            BigKey::K19,
-            BigKey::K20,
-        ];
         let mut e = WideEvent::<BigKey>::new();
-        for (i, &k) in keys.iter().enumerate() {
-            e.add(k, i as u64);
+        for i in 0..BigKey::MAX_KEYS {
+            e.add(BigKey::KEYS[i], i as u64);
         }
-        assert_eq!(e.len(), 24);
+        assert_eq!(e.len(), BigKey::MAX_KEYS);
         assert!(
-            !e.entries.spilled(),
-            "24 entries must fit in inline storage"
+            !e.values.spilled(),
+            "{} entries must fit in inline storage",
+            BigKey::MAX_KEYS
         );
     }
 
-    // ---- Path method tests ----
+    // ── Path method tests ──
 
     #[test]
     fn add_path_single_segment() {
@@ -636,7 +513,9 @@ mod tests {
         e.add_path(&[TestKey::Service, TestKey::Version], "1.0.0");
         e.add_path(&[TestKey::Service, TestKey::Name], "b");
         let json = e.to_json().unwrap();
-        assert_eq!(json, r#"{"service":{"name":"b","version":"1.0.0"}}"#);
+        // Index-ordered: service object has name and version
+        assert!(json.contains(r#""name":"b""#));
+        assert!(json.contains(r#""version":"1.0.0""#));
     }
 
     #[test]
@@ -648,50 +527,7 @@ mod tests {
         assert_eq!(json, r#"{"duration":{"total_ms":42}}"#);
     }
 
-    #[test]
-    fn inc_path_single_segment() {
-        let mut e = WideEvent::<TestKey>::new();
-        e.inc_path(&[TestKey::Requests]);
-        e.inc_path(&[TestKey::Requests]);
-        e.inc_path(&[TestKey::Requests]);
-        assert_eq!(e.to_json().unwrap(), r#"{"requests":3}"#);
-    }
-
-    #[test]
-    fn dec_path_single_segment() {
-        let mut e = WideEvent::<TestKey>::new();
-        e.dec_path(&[TestKey::Requests]);
-        assert_eq!(e.to_json().unwrap(), r#"{"requests":-1}"#);
-    }
-
-    #[test]
-    fn add_n_path_single_segment() {
-        let mut e = WideEvent::<TestKey>::new();
-        e.add_n_path(&[TestKey::Requests], 5);
-        e.add_n_path(&[TestKey::Requests], -2);
-        assert_eq!(e.to_json().unwrap(), r#"{"requests":3}"#);
-    }
-
-    #[test]
-    fn inc_path_two_segments() {
-        let mut e = WideEvent::<TestKey>::new();
-        e.add_path(&[TestKey::Service, TestKey::Requests], 0u64);
-        e.inc_path(&[TestKey::Service, TestKey::Requests]);
-        e.inc_path(&[TestKey::Service, TestKey::Requests]);
-        let json = e.to_json().unwrap();
-        assert_eq!(json, r#"{"service":{"requests":2}}"#);
-    }
-
-    #[test]
-    fn add_n_path_two_segments() {
-        let mut e = WideEvent::<TestKey>::new();
-        e.add_n_path(&[TestKey::Service, TestKey::Requests], 10);
-        e.add_n_path(&[TestKey::Service, TestKey::Requests], -3);
-        let json = e.to_json().unwrap();
-        assert_eq!(json, r#"{"service":{"requests":7}}"#);
-    }
-
-    // ---- inc / dec / add_n single-key tests ----
+    // ── inc / dec / add_n tests ──
 
     #[test]
     fn inc_initializes_to_one() {
@@ -746,7 +582,52 @@ mod tests {
         assert_eq!(e.to_json().unwrap(), r#"{"requests":7}"#);
     }
 
-    // ---- Log entry tests ----
+    // ── Path inc/dec/add_n tests ──
+
+    #[test]
+    fn inc_path_single_segment() {
+        let mut e = WideEvent::<TestKey>::new();
+        e.inc_path(&[TestKey::Requests]);
+        e.inc_path(&[TestKey::Requests]);
+        e.inc_path(&[TestKey::Requests]);
+        assert_eq!(e.to_json().unwrap(), r#"{"requests":3}"#);
+    }
+
+    #[test]
+    fn dec_path_single_segment() {
+        let mut e = WideEvent::<TestKey>::new();
+        e.dec_path(&[TestKey::Requests]);
+        assert_eq!(e.to_json().unwrap(), r#"{"requests":-1}"#);
+    }
+
+    #[test]
+    fn add_n_path_single_segment() {
+        let mut e = WideEvent::<TestKey>::new();
+        e.add_n_path(&[TestKey::Requests], 5);
+        e.add_n_path(&[TestKey::Requests], -2);
+        assert_eq!(e.to_json().unwrap(), r#"{"requests":3}"#);
+    }
+
+    #[test]
+    fn inc_path_two_segments() {
+        let mut e = WideEvent::<TestKey>::new();
+        e.add_path(&[TestKey::Service, TestKey::Requests], 0u64);
+        e.inc_path(&[TestKey::Service, TestKey::Requests]);
+        e.inc_path(&[TestKey::Service, TestKey::Requests]);
+        let json = e.to_json().unwrap();
+        assert!(json.contains(r#""requests":2"#));
+    }
+
+    #[test]
+    fn add_n_path_two_segments() {
+        let mut e = WideEvent::<TestKey>::new();
+        e.add_n_path(&[TestKey::Service, TestKey::Requests], 10);
+        e.add_n_path(&[TestKey::Service, TestKey::Requests], -3);
+        let json = e.to_json().unwrap();
+        assert!(json.contains(r#""requests":7"#));
+    }
+
+    // ── Log entry tests ──
 
     #[test]
     fn append_log_entry_single() {

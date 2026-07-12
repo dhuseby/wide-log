@@ -31,6 +31,9 @@ pub trait Key: Copy + Eq + 'static {
     /// The total number of keys in the enum.
     const MAX_KEYS: usize;
 
+    /// All keys in enum order, indexed by `as_index`.
+    const KEYS: &'static [Self];
+
     /// Returns the discriminant index of this key.
     fn as_index(self) -> usize;
 
@@ -92,6 +95,23 @@ pub(crate) mod test_support {
 
         const MAX_KEYS: usize = 14;
 
+        const KEYS: &'static [Self] = &[
+            TestKey::Duration,
+            TestKey::TotalMs,
+            TestKey::Event,
+            TestKey::Timestamp,
+            TestKey::Id,
+            TestKey::Service,
+            TestKey::Name,
+            TestKey::Version,
+            TestKey::Requests,
+            TestKey::Status,
+            TestKey::Details,
+            TestKey::Tag,
+            TestKey::Count,
+            TestKey::Flag,
+        ];
+
         fn as_index(self) -> usize {
             self as usize
         }
@@ -146,6 +166,7 @@ mod tests {
     #[test]
     fn max_keys_correct() {
         assert_eq!(TestKey::MAX_KEYS, 14);
+        assert_eq!(TestKey::KEYS.len(), 14);
     }
 
     #[test]
