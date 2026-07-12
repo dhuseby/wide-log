@@ -30,7 +30,7 @@ use wide_log::wide_log;
 
 wide_log!({
     "service": {
-        "name": null,
+        "name": "example-service",
         "version": "1.0.0",
     },
     "requests": counter!,
@@ -41,7 +41,6 @@ fn main() {
 
     let _guard = WideLogGuard::new();
 
-    wl_set!("service.name", "example-service");
     wl_inc!("requests");
 
     info!("request received");
@@ -79,7 +78,7 @@ use wide_log::wide_log;
 
 wide_log!({
     "service": {
-        "name": null,
+        "name": "example-service",
         "version": "1.0.0",
     },
     "requests": counter!,
@@ -89,11 +88,11 @@ fn main() {
     tracing_subscriber::fmt().init();
 
     // Create guard — takes no arguments. Sets default values from JSON
-    // (service.version = "1.0.0"), starts the timer:
+    // (service.name = "example-service", service.version = "1.0.0")
+    // starts the timer:
     let _guard = WideLogGuard::new();
 
     // Set per-request field values:
-    wl_set!("service.name", "example-service");
     wl_inc!("requests");
 
     // Add log messages — these accumulate in the "log" array:
@@ -112,7 +111,7 @@ use wide_log::wide_log;
 
 wide_log!({
     "service": {
-        "name": null,
+        "name": "example-service",
         "version": "1.0.0",
     },
     "requests": counter!,
@@ -127,7 +126,6 @@ async fn main() {
 
 async fn handle_request() {
     scope_default(async {
-        wl_set!("service.name", "example-service");
         wl_inc!("requests");
         info!("request received");
 
@@ -202,7 +200,7 @@ use wide_log::wide_log;
 
 wide_log!({
     "service": {
-        "name": null,
+        "name": "ok-service",
         "version": "1.0.0",
     },
     "http": {
@@ -214,7 +212,6 @@ wide_log!({
 
 async fn ok() -> &'static str {
     // Guard is already active via the middleware — no scope_default() needed.
-    wl_set!("service.name", "ok-service");
     wl_set!("http.method", "GET");
     wl_set!("http.path", "/ok");
     wl_set!("http.status", 200u64);
@@ -255,7 +252,7 @@ task-local first. No arguments or threading needed.
 use wide_log::wide_log;
 
 wide_log!({
-    "service": { "name": null, "version": "1.0.0" },
+    "service": { "name": "example-service", "version": "1.0.0" },
     "requests": counter!,
 });
 
@@ -266,7 +263,6 @@ fn main() {
         }
     });
 
-    wl_set!("service.name", "example-service");
     wl_inc!("requests");
     info!("request received");
 }
