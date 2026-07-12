@@ -437,7 +437,8 @@ impl GenContext {
                         let inner = ::std::boxed::Box::new(::wide_log::WideEventGuard::new(emit_fn));
                         let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                             use ::std::ops::Deref;
-                            inner.deref() as *const _ as *mut _
+                            let guard_ref: &::wide_log::WideEventGuard<EventKey, F> = inner.deref();
+                            guard_ref.deref() as *const _ as *mut _
                         };
                         let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
                         Self { inner, prev_ptr }
@@ -456,7 +457,8 @@ impl GenContext {
                         }
                         let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                             use ::std::ops::Deref;
-                            inner.deref() as *const _ as *mut _
+                            let guard_ref: &::wide_log::WideEventGuard<EventKey, F> = inner.deref();
+                            guard_ref.deref() as *const _ as *mut _
                         };
                         let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
                         Self { inner, prev_ptr }
@@ -529,6 +531,7 @@ impl GenContext {
                 use std::task::{Context, Poll};
                 use std::pin::Pin;
 
+                #[derive(Clone)]
                 pub struct WideLogLayer;
 
                 impl<S> ::wide_log::__re_exports::tower::Layer<S> for WideLogLayer {
@@ -538,6 +541,7 @@ impl GenContext {
                     }
                 }
 
+                #[derive(Clone)]
                 pub struct WideLogMiddleware<S> {
                     inner: S,
                 }

@@ -23,7 +23,8 @@ tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 
 [[bench]]
 name = "comparison"
@@ -31,4 +32,16 @@ harness = false
 
 [[test]]
 name = "async"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_single_thread"
+required-features = ["tokio"]
+
+[[example]]
+name = "async_multi_thread"
+required-features = ["tokio"]
+
+[[example]]
+name = "axum_ok"
 required-features = ["tokio"]
