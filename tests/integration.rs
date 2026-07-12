@@ -209,3 +209,101 @@ fn duration_auto_added() {
     let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
     assert!(total_ms >= 1, "duration.total_ms should be >= 1, got {total_ms}");
 }
+
+// ---- Nested scope tests (§4.1) ----
+
+#[test]
+fn nested_sync_scopes_innermost_accessible() {
+    let outer_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let inner_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    let oc = outer_captured.clone();
+    let _outer = EventKeyGuard::new_with_emit(move |ev| {
+        *oc.lock().unwrap() = Some(ev.to_json().unwrap());
+    });
+
+    wl_set!("status", "outer");
+    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 2); // service.version default + status
+
+    {
+        let ic = inner_captured.clone();
+        let _inner = EventKeyGuard::new_with_emit(move |ev| {
+            *ic.lock().unwrap() = Some(ev.to_json().unwrap());
+        });
+
+        // Inner scope: current() returns the inner event, not the outer.
+        wl_set!("status", "inner");
+        assert_eq!(current().map(|e| e.len()).unwrap_or(0), 2); // service.version default + status
+
+        info!("inner log");
+    }
+
+    // After inner drop: outer event is restored.
+    // The outer event should still have status="outer" (not "inner").
+    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 2);
+
+    drop(_outer);
+
+    let outer_json = outer_captured.lock().unwrap().clone().unwrap();
+    let inner_json = inner_captured.lock().unwrap().clone().unwrap();
+
+    let outer_parsed: sonic_rs::Value = sonic_rs::from_str(&outer_json).unwrap();
+    let inner_parsed: sonic_rs::Value = sonic_rs::from_str(&inner_json).unwrap();
+
+    assert_eq!(outer_parsed["status"], "outer");
+    assert_eq!(inner_parsed["status"], "inner");
+    // Outer event has no log entries (info! went to inner event).
+    assert!(outer_parsed.get("log").is_none() || outer_parsed["log"].is_null());
+    assert!(inner_parsed["log"].is_array());
+}
+
+#[test]
+fn nested_sync_scopes_outer_restored_after_inner_drop() {
+    let outer_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let inner_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    let oc = outer_captured.clone();
+    let _outer = EventKeyGuard::new_with_emit(move |ev| {
+        *oc.lock().unwrap() = Some(ev.to_json().unwrap());
+    });
+
+    wl_inc!("requests");
+
+    {
+        let ic = inner_captured.clone();
+        let _inner = EventKeyGuard::new_with_emit(move |ev| {
+            *ic.lock().unwrap() = Some(ev.to_json().unwrap());
+        });
+
+        // Inner event is separate — inc doesn't affect outer.
+        wl_inc!("requests");
+        wl_inc!("requests");
+    }
+
+    // Outer event should still have requests=1 (plus service.version default).
+    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 2);
+
+    drop(_outer);
+
+    let outer_json = outer_captured.lock().unwrap().clone().unwrap();
+    let inner_json = inner_captured.lock().unwrap().clone().unwrap();
+
+    let outer_parsed: sonic_rs::Value = sonic_rs::from_str(&outer_json).unwrap();
+    let inner_parsed: sonic_rs::Value = sonic_rs::from_str(&inner_json).unwrap();
+
+    assert_eq!(outer_parsed["requests"], 1);
+    assert_eq!(inner_parsed["requests"], 2);
+}
+
+#[test]
+fn current_is_none_without_guard() {
+    assert!(current().is_none());
+}
+
+#[test]
+fn current_is_some_with_guard() {
+    let _guard = EventKeyGuard::new_with_emit(|_| {});
+    assert!(current().is_some());
+    drop(_guard);
+    assert!(current().is_none());
+}

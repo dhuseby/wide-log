@@ -394,8 +394,8 @@ impl GenContext {
 
         let thread_local = quote! {
             thread_local! {
-                static CURRENT_EVENT: ::std::cell::Cell<*mut ::wide_log::WideEvent<EventKey>> =
-                    const { ::std::cell::Cell::new(::std::ptr::null_mut()) };
+                static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
+                    const { ::wide_log::ContextCell::new() };
             }
         };
 
@@ -412,6 +412,14 @@ impl GenContext {
                 inner: ::std::boxed::Box<::wide_log::WideEventGuard<EventKey, F>>,
                 prev_ptr: *mut ::wide_log::WideEvent<EventKey>,
             }
+
+            // SAFETY: The raw pointer `prev_ptr` is only accessed via the
+            // thread-local `CURRENT_EVENT` cell, which is per-thread. When the
+            // guard is moved across threads (in async), the task-local
+            // `TASK_EVENT` moves with the task. The pointer is never
+            // dereferenced from a different thread than the one that set it.
+            unsafe impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Send
+                for EventKeyGuard<F> {}
         };
 
         let guard_new = quote! {
@@ -431,11 +439,7 @@ impl GenContext {
                             use ::std::ops::Deref;
                             inner.deref() as *const _ as *mut _
                         };
-                        let prev_ptr = CURRENT_EVENT.with(|c| {
-                            let prev = c.get();
-                            c.set(ptr);
-                            prev
-                        });
+                        let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
                         Self { inner, prev_ptr }
                     }
                 }
@@ -454,11 +458,7 @@ impl GenContext {
                             use ::std::ops::Deref;
                             inner.deref() as *const _ as *mut _
                         };
-                        let prev_ptr = CURRENT_EVENT.with(|c| {
-                            let prev = c.get();
-                            c.set(ptr);
-                            prev
-                        });
+                        let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
                         Self { inner, prev_ptr }
                     }
                 }
@@ -468,9 +468,7 @@ impl GenContext {
         let guard_drop = quote! {
             impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for EventKeyGuard<F> {
                 fn drop(&mut self) {
-                    CURRENT_EVENT.with(|c| {
-                        c.set(self.prev_ptr);
-                    });
+                    CURRENT_EVENT.with(|c| c.restore(self.prev_ptr));
                 }
             }
         };
@@ -478,32 +476,16 @@ impl GenContext {
         let current_fn = if tokio {
             quote! {
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    if let Ok(ptr) = TASK_EVENT.try_with(|c| c.get()) {
-                        if !ptr.is_null() {
-                            return Some(unsafe { &mut *ptr });
-                        }
+                    if let Ok(Some(ptr)) = TASK_EVENT.try_with(|c| c.get()) {
+                        return Some(unsafe { &mut *ptr });
                     }
-                    CURRENT_EVENT.with(|c| {
-                        let ptr = c.get();
-                        if ptr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { &mut *ptr })
-                        }
-                    })
+                    CURRENT_EVENT.with(|c| unsafe { c.deref_mut() })
                 }
             }
         } else {
             quote! {
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    CURRENT_EVENT.with(|c| {
-                        let ptr = c.get();
-                        if ptr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { &mut *ptr })
-                        }
-                    })
+                    CURRENT_EVENT.with(|c| unsafe { c.deref_mut() })
                 }
             }
         };
@@ -511,7 +493,7 @@ impl GenContext {
         let tokio_code = if tokio {
             let task_local = quote! {
                 ::wide_log::__re_exports::tokio::task_local! {
-                    static TASK_EVENT: ::std::cell::Cell<*mut ::wide_log::WideEvent<EventKey>>;
+                    static TASK_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>>;
                 }
             };
 
@@ -521,11 +503,21 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let mut guard = EventKeyGuard::new_with_emit(emit_fn);
-                    use ::std::ops::Deref;
-                    let ptr: *mut ::wide_log::WideEvent<EventKey> =
-                        guard.inner.deref() as *const _ as *mut _;
-                    TASK_EVENT.scope(::std::cell::Cell::new(ptr), f).await
+                    let mut inner = ::std::boxed::Box::new(::wide_log::WideEventGuard::new(emit_fn));
+                    {
+                        use ::std::ops::DerefMut;
+                        let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
+                        #(#default_stmts)*
+                    }
+                    let ptr: *mut ::wide_log::WideEvent<EventKey> = {
+                        use ::std::ops::Deref;
+                        let guard_ref: &::wide_log::WideEventGuard<EventKey, E> = inner.deref();
+                        guard_ref.deref() as *const _ as *mut _
+                    };
+                    let cell = ::wide_log::ContextCell::new();
+                    cell.replace(ptr);
+                    let _inner = inner;
+                    TASK_EVENT.scope(cell, f).await
                 }
 
                 pub async fn scope_default<F: ::std::future::Future>(f: F) -> F::Output {
@@ -536,11 +528,10 @@ impl GenContext {
             let middleware = quote! {
                 use std::task::{Context, Poll};
                 use std::pin::Pin;
-                use ::wide_log::__re_exports::tower::{Layer, Service};
 
                 pub struct WideLogLayer;
 
-                impl<S> Layer<S> for WideLogLayer {
+                impl<S> ::wide_log::__re_exports::tower::Layer<S> for WideLogLayer {
                     type Service = WideLogMiddleware<S>;
                     fn layer(&self, inner: S) -> Self::Service {
                         WideLogMiddleware { inner }
@@ -551,38 +542,51 @@ impl GenContext {
                     inner: S,
                 }
 
-                impl<S, ReqBody, ResBody> Service<ReqBody> for WideLogMiddleware<S>
+                impl<S, ReqBody, ResBody, Err> ::wide_log::__re_exports::tower::Service<ReqBody> for WideLogMiddleware<S>
                 where
-                    S: Service<ReqBody, Response = ResBody>,
+                    S: ::wide_log::__re_exports::tower::Service<ReqBody, Response = ResBody, Error = Err>,
+                    S::Future: Send + 'static,
+                    ResBody: Send + 'static,
+                    Err: Send + 'static,
                 {
-                    type Response = S::Response;
-                    type Error = S::Error;
-                    type Future = WideLogFuture<S::Future>;
+                    type Response = ResBody;
+                    type Error = Err;
+                    type Future = WideLogFuture<ResBody, Err>;
 
                     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
                         self.inner.poll_ready(cx)
                     }
 
                     fn call(&mut self, req: ReqBody) -> Self::Future {
-                        WideLogFuture {
-                            inner: self.inner.call(req),
+                        let inner_fut = self.inner.call(req);
+                        WideLogFuture::new(inner_fut)
+                    }
+                }
+
+                pub struct WideLogFuture<ResBody, Err> {
+                    inner: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = Result<ResBody, Err>> + Send>>,
+                }
+
+                impl<ResBody, Err> WideLogFuture<ResBody, Err>
+                where
+                    ResBody: Send + 'static,
+                    Err: Send + 'static,
+                {
+                    fn new<F>(inner: F) -> Self
+                    where
+                        F: ::std::future::Future<Output = Result<ResBody, Err>> + Send + 'static,
+                    {
+                        Self {
+                            inner: ::std::boxed::Box::pin(scope_default(async move { inner.await })),
                         }
                     }
                 }
 
-                pub struct WideLogFuture<F> {
-                    inner: F,
-                }
+                impl<ResBody, Err> Future for WideLogFuture<ResBody, Err> {
+                    type Output = Result<ResBody, Err>;
 
-                impl<F, ResBody, E> Future for WideLogFuture<F>
-                where
-                    F: Future<Output = Result<ResBody, E>>,
-                {
-                    type Output = Result<ResBody, E>;
-
-                    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.inner) };
-                        inner.poll(cx)
+                    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                        self.inner.as_mut().poll(cx)
                     }
                 }
             };

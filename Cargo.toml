@@ -23,7 +23,12 @@ tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 
 [[bench]]
 name = "comparison"
 harness = false
+
+[[test]]
+name = "async"
+required-features = ["tokio"]

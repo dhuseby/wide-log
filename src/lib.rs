@@ -15,6 +15,8 @@ pub use key::Key;
 pub use value::Value;
 pub use wide_event::WideEvent;
 
+pub use context::ContextCell;
+
 pub use wide_log_macros::wide_log;
 
 #[cfg(feature = "tokio")]
