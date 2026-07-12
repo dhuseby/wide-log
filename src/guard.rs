@@ -106,7 +106,10 @@ mod tests {
 
     type CaptureSlot = Arc<Mutex<Option<String>>>;
 
-    fn capture_json() -> (CaptureSlot, impl FnOnce(&WideEvent<TestKey>) + Send + 'static) {
+    fn capture_json() -> (
+        CaptureSlot,
+        impl FnOnce(&WideEvent<TestKey>) + Send + 'static,
+    ) {
         let slot: CaptureSlot = Arc::new(Mutex::new(None));
         let slot_clone = slot.clone();
         let emit = move |we: &WideEvent<TestKey>| {
@@ -150,10 +153,9 @@ mod tests {
         let counter = Arc::new(Mutex::new(0u32));
         let c = counter.clone();
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            emit,
-            move |_event, _key| { *c.lock().unwrap() += 1; },
-        );
+        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, move |_event, _key| {
+            *c.lock().unwrap() += 1;
+        });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);
         drop(g);
@@ -164,10 +166,9 @@ mod tests {
     #[test]
     fn guard_new_with_warnings_callback_can_mutate_event() {
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            emit,
-            |event, _key| { event.add(TestKey::Flag, true); },
-        );
+        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, |event, _key| {
+            event.add(TestKey::Flag, true);
+        });
         g.add(TestKey::Details, 42u64);
         g.object(TestKey::Details);
         drop(g);
@@ -177,30 +178,33 @@ mod tests {
 
     #[test]
     fn guard_new_with_warnings_callback_appends_warning_string() {
-        use smallvec::smallvec;
         use crate::value::Value;
+        use smallvec::smallvec;
 
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            emit,
-            |event, key| {
-                let warning = format!("{} type conflict", key.as_str());
-                let entry = Box::new(Value::from(warning));
-                for (k, v) in &mut event.entries {
-                    if *k == TestKey::Tag
-                        && let Value::Array(arr) = v {
-                        arr.push(entry);
-                        return;
-                    }
+        let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(emit, |event, key| {
+            let warning = format!("{} type conflict", key.as_str());
+            let entry = Box::new(Value::from(warning));
+            for (k, v) in &mut event.entries {
+                if *k == TestKey::Tag
+                    && let Value::Array(arr) = v
+                {
+                    arr.push(entry);
+                    return;
                 }
-                event.entries.push((TestKey::Tag, Value::Array(smallvec![entry])));
-            },
-        );
+            }
+            event
+                .entries
+                .push((TestKey::Tag, Value::Array(smallvec![entry])));
+        });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);
         drop(g);
         let json = slot.lock().unwrap().clone().unwrap();
-        assert!(json.contains("\"details type conflict\""), "warning string should appear in JSON");
+        assert!(
+            json.contains("\"details type conflict\""),
+            "warning string should appear in JSON"
+        );
     }
 
     #[test]
@@ -225,6 +229,9 @@ mod tests {
         let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
         use sonic_rs::JsonValueTrait;
         let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
-        assert!(total_ms >= 1, "duration.total_ms should be >= 1, got {total_ms}");
+        assert!(
+            total_ms >= 1,
+            "duration.total_ms should be >= 1, got {total_ms}"
+        );
     }
 }

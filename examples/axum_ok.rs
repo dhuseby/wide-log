@@ -1,5 +1,5 @@
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use wide_log::wide_log;
 
 wide_log!({
@@ -46,9 +46,7 @@ async fn fetch_upstream() {
 async fn main() {
     tracing_subscriber::fmt().init();
 
-    let app = Router::new()
-        .route("/ok", get(ok))
-        .layer(WideLogLayer);
+    let app = Router::new().route("/ok", get(ok)).layer(WideLogLayer);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();

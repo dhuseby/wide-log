@@ -223,9 +223,7 @@ impl GenContext {
                     return Ok(());
                 }
 
-                let total_ms_entry = entries
-                    .iter()
-                    .find(|(k, _)| k == "total_ms");
+                let total_ms_entry = entries.iter().find(|(k, _)| k == "total_ms");
 
                 if total_ms_entry.is_some() {
                     for (k, v) in entries {
@@ -252,10 +250,8 @@ impl GenContext {
                 if non_duration_leaves.len() == 1 {
                     let leaf = non_duration_leaves[0].clone();
                     self.add_duration_subtree(&leaf);
-                    let other_entries: Vec<&(String, JsonNode)> = entries
-                        .iter()
-                        .filter(|(k, _)| *k != leaf)
-                        .collect();
+                    let other_entries: Vec<&(String, JsonNode)> =
+                        entries.iter().filter(|(k, _)| *k != leaf).collect();
                     for (k, v) in other_entries {
                         let p = vec![duration_seg.clone(), k.clone()];
                         self.walk(v, &p)?;
@@ -759,12 +755,56 @@ fn to_pascal_case(name: &str) -> String {
 fn is_rust_keyword(s: &str) -> bool {
     matches!(
         s,
-        "as" | "break" | "const" | "continue" | "crate" | "else" | "enum" | "extern"
-        | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match"
-        | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
-        | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe"
-        | "use" | "where" | "while" | "async" | "await" | "dyn" | "abstract"
-        | "become" | "box" | "do" | "final" | "macro" | "override" | "priv" | "typeof"
-        | "unsized" | "virtual" | "yield" | "try" | "union"
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+            | "union"
     )
 }

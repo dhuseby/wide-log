@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex};
 
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
-fn capture() -> (CaptureSlot, impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static) {
+fn capture() -> (
+    CaptureSlot,
+    impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,
+) {
     let slot: CaptureSlot = Arc::new(Mutex::new(None));
     let s = slot.clone();
     let emit = move |we: &wide_log::WideEvent<EventKey>| {
@@ -382,7 +385,11 @@ fn info_shadows_tracing_info() {
 
     let parsed = parse(&slot);
     let log = parsed["log"].as_array().unwrap();
-    assert_eq!(log.len(), 2, "only wide-log info! calls should be in the log list");
+    assert_eq!(
+        log.len(),
+        2,
+        "only wide-log info! calls should be in the log list"
+    );
     assert_eq!(log[0]["message"], "shadowed by wide-log");
     assert_eq!(log[1]["message"], "second wide-log entry");
 }
@@ -391,7 +398,7 @@ fn info_shadows_tracing_info() {
 fn all_log_macros_shadow_tracing() {
     // Bring all tracing log macros into scope.
     #[allow(unused_imports)]
-    use tracing::{info as _, warn as _, error as _, debug as _, trace as _};
+    use tracing::{debug as _, error as _, info as _, trace as _, warn as _};
 
     let (slot, emit) = capture();
     let _guard = EventKeyGuard::new_with_emit(emit);

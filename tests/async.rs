@@ -14,7 +14,10 @@ use std::sync::{Arc, Mutex};
 
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
-fn capture() -> (CaptureSlot, impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static) {
+fn capture() -> (
+    CaptureSlot,
+    impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,
+) {
     let slot: CaptureSlot = Arc::new(Mutex::new(None));
     let slot_clone = slot.clone();
     let emit = move |we: &wide_log::WideEvent<EventKey>| {
@@ -142,18 +145,16 @@ async fn current_is_none_without_scope() {
 
 #[tokio::test]
 async fn current_is_some_inside_scope() {
-    scope(
-        |_| {},
-        async {
-            assert!(current().is_some());
-        },
-    )
+    scope(|_| {}, async {
+        assert!(current().is_some());
+    })
     .await;
 }
 
 #[tokio::test]
 async fn concurrent_tasks_have_separate_events() {
-    let slots: Vec<Arc<Mutex<Option<String>>>> = (0..5).map(|_| Arc::new(Mutex::new(None))).collect();
+    let slots: Vec<Arc<Mutex<Option<String>>>> =
+        (0..5).map(|_| Arc::new(Mutex::new(None))).collect();
 
     let mut handles = vec![];
     for (i, slot) in slots.iter().enumerate() {
@@ -223,10 +224,7 @@ async fn middleware_wraps_request_in_scope() {
     let mut middleware = WideLogLayer.layer(OkService);
 
     // The handler runs inside scope_default via the middleware.
-    let response = middleware
-        .call("hello".to_string())
-        .await
-        .unwrap();
+    let response = middleware.call("hello".to_string()).await.unwrap();
 
     assert_eq!(response, "hello");
 
@@ -244,10 +242,7 @@ async fn middleware_handler_can_use_macros() {
 
     // We can't easily capture the emitted JSON (default_emit uses tracing),
     // but we can verify the macros don't panic and the handler runs.
-    let response = middleware
-        .call("request-body".to_string())
-        .await
-        .unwrap();
+    let response = middleware.call("request-body".to_string()).await.unwrap();
 
     assert_eq!(response, "request-body");
 

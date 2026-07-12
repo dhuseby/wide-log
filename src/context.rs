@@ -40,11 +40,7 @@ impl<T> ContextCell<T> {
     #[inline]
     pub fn get(&self) -> Option<*mut T> {
         let ptr = self.ptr.get();
-        if ptr.is_null() {
-            None
-        } else {
-            Some(ptr)
-        }
+        if ptr.is_null() { None } else { Some(ptr) }
     }
 
     /// Sets the stored pointer. Returns the previous pointer.

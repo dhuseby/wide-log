@@ -207,7 +207,10 @@ fn duration_auto_added() {
     let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
     use sonic_rs::JsonValueTrait;
     let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
-    assert!(total_ms >= 1, "duration.total_ms should be >= 1, got {total_ms}");
+    assert!(
+        total_ms >= 1,
+        "duration.total_ms should be >= 1, got {total_ms}"
+    );
 }
 
 // ---- Nested scope tests (§4.1) ----

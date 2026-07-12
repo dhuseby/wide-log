@@ -1,4 +1,4 @@
-use proc_macro2::{TokenStream as TokenStream2, TokenTree, Delimiter, Literal};
+use proc_macro2::{Delimiter, Literal, TokenStream as TokenStream2, TokenTree};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -56,11 +56,15 @@ fn parse_value(
                         _ => unreachable!(),
                     };
                     match iter.next() {
-                        Some(TokenTree::Punct(p)) if p.as_char() == '!' => Ok(JsonNode::Marker(marker)),
+                        Some(TokenTree::Punct(p)) if p.as_char() == '!' => {
+                            Ok(JsonNode::Marker(marker))
+                        }
                         _ => Err(format!("expected '!' after '{s}' marker")),
                     }
                 }
-                other => Err(format!("unexpected identifier '{other}' (expected a JSON value)")),
+                other => Err(format!(
+                    "unexpected identifier '{other}' (expected a JSON value)"
+                )),
             }
         }
         TokenTree::Punct(p) if p.as_char() == '-' => {
@@ -96,7 +100,6 @@ fn parse_literal(lit: &Literal) -> Result<JsonNode, String> {
 }
 
 fn parse_literal_str(s: &str) -> Result<JsonNode, String> {
-
     if s.starts_with('"') {
         let parsed = unescape_json_string(&s)?;
         return Ok(JsonNode::Str(parsed));
@@ -143,7 +146,14 @@ fn parse_object(inner: &TokenStream2) -> Result<JsonNode, String> {
         let key = parse_key(&mut iter)?;
         match iter.next() {
             Some(TokenTree::Punct(p)) if p.as_char() == ':' => {}
-            other => return Err(format!("expected ':' after key, got: {}", other.map(|t| t.to_string()).unwrap_or("end of input".into()))),
+            other => {
+                return Err(format!(
+                    "expected ':' after key, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
         }
         let value = parse_value(&mut iter)?;
         if seen_keys.contains_key(&key) {
@@ -159,7 +169,14 @@ fn parse_object(inner: &TokenStream2) -> Result<JsonNode, String> {
                     break;
                 }
             }
-            other => return Err(format!("expected ',' or end of object, got: {}", other.map(|t| t.to_string()).unwrap_or("end of input".into()))),
+            other => {
+                return Err(format!(
+                    "expected ',' or end of object, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
         }
     }
 
@@ -206,7 +223,9 @@ fn unescape_json_string(raw: &str) -> Result<String, String> {
             out.push(c);
             continue;
         }
-        let esc = chars.next().ok_or("unterminated escape in string literal")?;
+        let esc = chars
+            .next()
+            .ok_or("unterminated escape in string literal")?;
         match esc {
             '"' => out.push('"'),
             '\\' => out.push('\\'),

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use faststr::FastStr;
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use smallvec::SmallVec;
-use serde::ser::{SerializeMap, Serialize, Serializer};
 
 use crate::error::Error;
 use crate::key::Key;
@@ -124,9 +124,9 @@ impl<K: Key> WideEvent<K> {
                     arc_cb(self, key);
                 }
                 self.on_type_conflict = cb_opt;
-                self.entries[i].1 = Value::Object(Box::new(
-                    WideEvent::with_callback(self.on_type_conflict.clone()),
-                ));
+                self.entries[i].1 = Value::Object(Box::new(WideEvent::with_callback(
+                    self.on_type_conflict.clone(),
+                )));
             }
             if let Value::Object(ref mut child) = self.entries[i].1 {
                 return child;
@@ -232,7 +232,14 @@ impl<K: Key> WideEvent<K> {
                 return;
             }
         }
-        self.entries.push((key, if n >= 0 { Value::U64(n as u64) } else { Value::I64(n) }));
+        self.entries.push((
+            key,
+            if n >= 0 {
+                Value::U64(n as u64)
+            } else {
+                Value::I64(n)
+            },
+        ));
     }
 
     /// Increment a numeric field at a nested path by 1.
@@ -343,31 +350,63 @@ mod tests {
     enum BigKey {
         Duration,
         TotalMs,
-        K2,  K3,  K4,  K5,  K6,  K7,  K8,  K9,
-        K10, K11, K12, K13, K14, K15, K16,
-        K17, K18, K19, K20, K21, K22, K23,
+        K2,
+        K3,
+        K4,
+        K5,
+        K6,
+        K7,
+        K8,
+        K9,
+        K10,
+        K11,
+        K12,
+        K13,
+        K14,
+        K15,
+        K16,
+        K17,
+        K18,
+        K19,
+        K20,
+        K21,
+        K22,
+        K23,
     }
 
     impl crate::key::Key for BigKey {
         fn as_str(self) -> &'static str {
             match self {
                 BigKey::Duration => "duration",
-                BigKey::TotalMs  => "total_ms",
-                BigKey::K2  => "k2",  BigKey::K3  => "k3",
-                BigKey::K4  => "k4",  BigKey::K5  => "k5",
-                BigKey::K6  => "k6",  BigKey::K7  => "k7",
-                BigKey::K8  => "k8",  BigKey::K9  => "k9",
-                BigKey::K10 => "k10", BigKey::K11 => "k11",
-                BigKey::K12 => "k12", BigKey::K13 => "k13",
-                BigKey::K14 => "k14", BigKey::K15 => "k15",
-                BigKey::K16 => "k16", BigKey::K17 => "k17",
-                BigKey::K18 => "k18", BigKey::K19 => "k19",
-                BigKey::K20 => "k20", BigKey::K21 => "k21",
-                BigKey::K22 => "k22", BigKey::K23 => "k23",
+                BigKey::TotalMs => "total_ms",
+                BigKey::K2 => "k2",
+                BigKey::K3 => "k3",
+                BigKey::K4 => "k4",
+                BigKey::K5 => "k5",
+                BigKey::K6 => "k6",
+                BigKey::K7 => "k7",
+                BigKey::K8 => "k8",
+                BigKey::K9 => "k9",
+                BigKey::K10 => "k10",
+                BigKey::K11 => "k11",
+                BigKey::K12 => "k12",
+                BigKey::K13 => "k13",
+                BigKey::K14 => "k14",
+                BigKey::K15 => "k15",
+                BigKey::K16 => "k16",
+                BigKey::K17 => "k17",
+                BigKey::K18 => "k18",
+                BigKey::K19 => "k19",
+                BigKey::K20 => "k20",
+                BigKey::K21 => "k21",
+                BigKey::K22 => "k22",
+                BigKey::K23 => "k23",
             }
         }
         const MAX_KEYS: usize = 24;
-        fn as_index(self) -> usize { self as usize }
+        fn as_index(self) -> usize {
+            self as usize
+        }
         const DURATION_PATH: &'static [Self] = &[BigKey::Duration, BigKey::TotalMs];
     }
 
@@ -406,8 +445,8 @@ mod tests {
     fn add_multiple_keys() {
         let mut e = WideEvent::<TestKey>::new();
         e.add(TestKey::Requests, 42u64);
-        e.add(TestKey::Status,   "ok");
-        e.add(TestKey::Tag,      "web");
+        e.add(TestKey::Status, "ok");
+        e.add(TestKey::Tag, "web");
         assert_eq!(e.len(), 3);
     }
 
@@ -445,25 +484,31 @@ mod tests {
 
     #[test]
     fn object_type_conflict_callback_appends_warning_string() {
-        use smallvec::smallvec;
         use crate::value::Value;
+        use smallvec::smallvec;
 
         let mut e = WideEvent::new_with_warnings(|event, key: TestKey| {
             let warning = format!("{} type conflict", key.as_str());
             let entry = Box::new(Value::from(warning));
             for (k, v) in &mut event.entries {
                 if *k == TestKey::Tag
-                    && let Value::Array(arr) = v {
+                    && let Value::Array(arr) = v
+                {
                     arr.push(entry);
                     return;
                 }
             }
-            event.entries.push((TestKey::Tag, Value::Array(smallvec![entry])));
+            event
+                .entries
+                .push((TestKey::Tag, Value::Array(smallvec![entry])));
         });
         e.add(TestKey::Details, true);
         e.object(TestKey::Details);
         let json = e.to_json().unwrap();
-        assert!(json.contains("\"details type conflict\""), "warning string should appear in JSON");
+        assert!(
+            json.contains("\"details type conflict\""),
+            "warning string should appear in JSON"
+        );
     }
 
     #[test]
@@ -474,8 +519,14 @@ mod tests {
         e.add(TestKey::Details, 42u64);
         e.object(TestKey::Details).add(TestKey::Status, "ok");
         let json = e.to_json().unwrap();
-        assert!(json.contains("\"flag\":true"), "callback mutation should appear in event");
-        assert!(json.contains("\"details\""), "conflicted key should become an object");
+        assert!(
+            json.contains("\"flag\":true"),
+            "callback mutation should appear in event"
+        );
+        assert!(
+            json.contains("\"details\""),
+            "conflicted key should become an object"
+        );
     }
 
     #[test]
@@ -490,8 +541,8 @@ mod tests {
     fn to_json_valid() {
         let mut e = WideEvent::<TestKey>::new();
         e.add(TestKey::Requests, 7u64);
-        e.add(TestKey::Status,   "ok");
-        e.add(TestKey::Flag,     false);
+        e.add(TestKey::Status, "ok");
+        e.add(TestKey::Flag, false);
         let json = e.to_json().unwrap();
         assert!(json.starts_with('{'));
         assert!(json.ends_with('}'));
@@ -501,7 +552,7 @@ mod tests {
     fn to_json_roundtrip() {
         let mut e = WideEvent::<TestKey>::new();
         e.add(TestKey::Requests, 42u64);
-        e.add(TestKey::Status,   "active");
+        e.add(TestKey::Status, "active");
         let json = e.to_json().unwrap();
         let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
         assert_eq!(parsed["requests"], 42u64);
@@ -518,19 +569,40 @@ mod tests {
     #[test]
     fn inline_capacity_not_spilled() {
         let keys = [
-            BigKey::Duration, BigKey::TotalMs, BigKey::K2,  BigKey::K3,
-            BigKey::K4,  BigKey::K5,  BigKey::K6,  BigKey::K7,
-            BigKey::K8,  BigKey::K9,  BigKey::K10, BigKey::K11,
-            BigKey::K12, BigKey::K13, BigKey::K14, BigKey::K15,
-            BigKey::K16, BigKey::K17, BigKey::K18, BigKey::K19,
-            BigKey::K20, BigKey::K21, BigKey::K22, BigKey::K23,
+            BigKey::Duration,
+            BigKey::TotalMs,
+            BigKey::K2,
+            BigKey::K3,
+            BigKey::K4,
+            BigKey::K5,
+            BigKey::K6,
+            BigKey::K7,
+            BigKey::K8,
+            BigKey::K9,
+            BigKey::K10,
+            BigKey::K11,
+            BigKey::K12,
+            BigKey::K13,
+            BigKey::K14,
+            BigKey::K15,
+            BigKey::K16,
+            BigKey::K17,
+            BigKey::K18,
+            BigKey::K19,
+            BigKey::K20,
+            BigKey::K21,
+            BigKey::K22,
+            BigKey::K23,
         ];
         let mut e = WideEvent::<BigKey>::new();
         for (i, &k) in keys.iter().enumerate() {
             e.add(k, i as u64);
         }
         assert_eq!(e.len(), 24);
-        assert!(!e.entries.spilled(), "24 entries must fit in inline storage");
+        assert!(
+            !e.entries.spilled(),
+            "24 entries must fit in inline storage"
+        );
     }
 
     // ---- Path method tests ----

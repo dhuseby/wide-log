@@ -49,12 +49,12 @@ pub enum Value<K: Key> {
 impl<K: Key> Serialize for Value<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Value::Null       => serializer.serialize_unit(),
-            Value::Bool(b)    => serializer.serialize_bool(*b),
-            Value::I64(n)     => serializer.serialize_i64(*n),
-            Value::U64(n)     => serializer.serialize_u64(*n),
-            Value::F64(n)     => serializer.serialize_f64(*n),
-            Value::String(s)  => serializer.serialize_str(s.as_str()),
+            Value::Null => serializer.serialize_unit(),
+            Value::Bool(b) => serializer.serialize_bool(*b),
+            Value::I64(n) => serializer.serialize_i64(*n),
+            Value::U64(n) => serializer.serialize_u64(*n),
+            Value::F64(n) => serializer.serialize_f64(*n),
+            Value::String(s) => serializer.serialize_str(s.as_str()),
             Value::Array(arr) => arr.serialize(serializer),
             Value::Object(obj) => obj.serialize(serializer),
         }
@@ -63,42 +63,58 @@ impl<K: Key> Serialize for Value<K> {
 
 impl<K: Key> From<bool> for Value<K> {
     #[inline]
-    fn from(b: bool) -> Self { Value::Bool(b) }
+    fn from(b: bool) -> Self {
+        Value::Bool(b)
+    }
 }
 
 impl<K: Key> From<i64> for Value<K> {
     #[inline]
-    fn from(n: i64) -> Self { Value::I64(n) }
+    fn from(n: i64) -> Self {
+        Value::I64(n)
+    }
 }
 
 impl<K: Key> From<u64> for Value<K> {
     #[inline]
-    fn from(n: u64) -> Self { Value::U64(n) }
+    fn from(n: u64) -> Self {
+        Value::U64(n)
+    }
 }
 
 impl<K: Key> From<f64> for Value<K> {
     #[inline]
-    fn from(n: f64) -> Self { Value::F64(n) }
+    fn from(n: f64) -> Self {
+        Value::F64(n)
+    }
 }
 
 impl<K: Key> From<&str> for Value<K> {
     #[inline]
-    fn from(s: &str) -> Self { Value::String(FastStr::new(s)) }
+    fn from(s: &str) -> Self {
+        Value::String(FastStr::new(s))
+    }
 }
 
 impl<K: Key> From<String> for Value<K> {
     #[inline]
-    fn from(s: String) -> Self { Value::String(FastStr::new(&s)) }
+    fn from(s: String) -> Self {
+        Value::String(FastStr::new(&s))
+    }
 }
 
 impl<K: Key> From<FastStr> for Value<K> {
     #[inline]
-    fn from(s: FastStr) -> Self { Value::String(s) }
+    fn from(s: FastStr) -> Self {
+        Value::String(s)
+    }
 }
 
 impl<K: Key> From<()> for Value<K> {
     #[inline]
-    fn from(_: ()) -> Self { Value::Null }
+    fn from(_: ()) -> Self {
+        Value::Null
+    }
 }
 
 #[cfg(test)]
@@ -154,19 +170,32 @@ mod tests {
 
     #[test]
     fn serialize_scalars() {
-        assert_eq!(sonic_rs::to_string(&Value::<TestKey>::from(true)).unwrap(),  "true");
-        assert_eq!(sonic_rs::to_string(&Value::<TestKey>::from(false)).unwrap(), "false");
-        assert_eq!(sonic_rs::to_string(&Value::<TestKey>::from(-7i64)).unwrap(), "-7");
-        assert_eq!(sonic_rs::to_string(&Value::<TestKey>::from(42u64)).unwrap(), "42");
-        assert_eq!(sonic_rs::to_string(&Value::<TestKey>::from("hi")).unwrap(),  "\"hi\"");
+        assert_eq!(
+            sonic_rs::to_string(&Value::<TestKey>::from(true)).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            sonic_rs::to_string(&Value::<TestKey>::from(false)).unwrap(),
+            "false"
+        );
+        assert_eq!(
+            sonic_rs::to_string(&Value::<TestKey>::from(-7i64)).unwrap(),
+            "-7"
+        );
+        assert_eq!(
+            sonic_rs::to_string(&Value::<TestKey>::from(42u64)).unwrap(),
+            "42"
+        );
+        assert_eq!(
+            sonic_rs::to_string(&Value::<TestKey>::from("hi")).unwrap(),
+            "\"hi\""
+        );
     }
 
     #[test]
     fn serialize_array() {
-        let arr: SmallVec<[Box<Value<TestKey>>; 8]> = smallvec::smallvec![
-            Box::new(Value::from(1i64)),
-            Box::new(Value::from(2i64)),
-        ];
+        let arr: SmallVec<[Box<Value<TestKey>>; 8]> =
+            smallvec::smallvec![Box::new(Value::from(1i64)), Box::new(Value::from(2i64)),];
         let v = Value::<TestKey>::Array(arr);
         assert_eq!(sonic_rs::to_string(&v).unwrap(), "[1,2]");
     }
