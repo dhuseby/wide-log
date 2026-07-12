@@ -103,13 +103,40 @@ where
 {
     fn drop(&mut self) {
         let duration_ms = self.start.elapsed().as_millis() as u64;
-        // Fast path for common 2-segment DURATION_PATH and TIMESTAMP_PATH
+        // Fast path for common 2-segment DURATION_PATH and TIMESTAMP_PATH.
+        // Uses direct indexed writes instead of object() to avoid the overhead
+        // of creating and returning &mut references through the ManuallyDrop chain.
         if K::DURATION_PATH.len() == 2 && K::TIMESTAMP_PATH.len() == 2 {
-            let dur_parent = self.event.object(K::DURATION_PATH[0]);
-            dur_parent.add(K::DURATION_PATH[1], duration_ms);
-            let ts_parent = self.event.object(K::TIMESTAMP_PATH[0]);
+            let dur_idx = K::DURATION_PATH[0].as_index();
+            let ts_idx = K::TIMESTAMP_PATH[0].as_index();
+            self.event.ensure_capacity(dur_idx.max(ts_idx));
+
+            // Create child objects if needed (before mutable borrow)
+            let need_dur_child = match &self.event.values.get(dur_idx) {
+                Some(Some(v)) => !v.is_object(),
+                _ => true,
+            };
+            let need_ts_child = match &self.event.values.get(ts_idx) {
+                Some(Some(v)) => !v.is_object(),
+                _ => true,
+            };
+            if need_dur_child {
+                let child = self.event.new_child();
+                self.event.values[dur_idx] = Some(crate::value::Value::from_object(child));
+            }
+            if need_ts_child {
+                let child = self.event.new_child();
+                self.event.values[ts_idx] = Some(crate::value::Value::from_object(child));
+            }
+
+            // Now write the leaf values
+            if let Some(Some(v)) = self.event.values.get_mut(dur_idx) {
+                unsafe { &mut **v.data.object }.add(K::DURATION_PATH[1], duration_ms);
+            }
             let now = chrono::Utc::now().with_timezone(&self.tz);
-            ts_parent.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
+            if let Some(Some(v)) = self.event.values.get_mut(ts_idx) {
+                unsafe { &mut **v.data.object }.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
+            }
         } else {
             self.event.add_path(K::DURATION_PATH, duration_ms);
             let now = chrono::Utc::now().with_timezone(&self.tz);
@@ -227,15 +254,18 @@ mod tests {
         let (slot, emit) = capture_json();
         let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, key| {
             let warning = format!("{} type conflict", key.as_str());
-            let entry = Value::from(warning);
             let idx = TestKey::Tag.as_index();
-            if let Some(v) = &mut event.values[idx] {
-                if let Some(arr) = v.as_array_mut() {
-                    arr.push(entry);
+            // Check if there's already an array at Tag
+            let existing = event.values.get(idx).and_then(|v| v.as_ref());
+            if let Some(v) = existing {
+                if let Some(arr) = v.as_array_ref() {
+                    let mut new_arr = arr.clone();
+                    new_arr.push(Value::from(warning));
+                    event.add(TestKey::Tag, Value::from_array(new_arr));
                     return;
                 }
             }
-            event.values[idx] = Some(Value::from_array(smallvec![entry]));
+            event.add(TestKey::Tag, Value::from_array(smallvec![Value::from(warning)]));
         });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);

@@ -40,10 +40,8 @@ impl<K: Key> WideEvent<K> {
     /// Creates a new empty wide event with no conflict callback.
     #[inline]
     pub fn new() -> Self {
-        let mut values = SmallVec::new();
-        values.resize(K::MAX_KEYS, None);
         Self {
-            values,
+            values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: None,
         }
@@ -51,25 +49,34 @@ impl<K: Key> WideEvent<K> {
 
     /// Creates a new empty wide event with a type-conflict callback.
     pub fn new_with_warnings(f: ConflictFn<K>) -> Self {
-        let mut values = SmallVec::new();
-        values.resize(K::MAX_KEYS, None);
         Self {
-            values,
+            values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: Some(f),
+        }
+    }
+
+    /// Ensures the values SmallVec is large enough to index by `key.as_index()`.
+    #[inline]
+    pub(crate) fn ensure_capacity(&mut self, idx: usize) {
+        if idx >= self.values.len() {
+            self.values.resize(idx + 1, None);
         }
     }
 
     /// Sets or replaces a field value at the given key. O(1) indexed access.
     #[inline]
     pub fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
-        self.values[key.as_index()] = Some(value.into());
+        let idx = key.as_index();
+        self.ensure_capacity(idx);
+        self.values[idx] = Some(value.into());
     }
 
     /// Gets or creates a nested object at the given key, returning `&mut` to it.
     #[inline]
     pub fn object(&mut self, key: K) -> &mut WideEvent<K> {
         let idx = key.as_index();
+        self.ensure_capacity(idx);
         let needs_replace = match &self.values[idx] {
             None => true,
             Some(v) => !v.is_object(),
@@ -82,20 +89,22 @@ impl<K: Key> WideEvent<K> {
             }
             self.values[idx] = Some(Value::from_object(self.new_child()));
         }
-        // Safety: we just ensured it's an Object.
-        match &mut self.values[idx] {
-            Some(v) if v.tag() == ValueTag::Object => unsafe {
-                &mut v.data.object
-            },
-            _ => unreachable!(),
+        // Return &mut to the WideEvent inside the Object variant.
+        let slot = &mut self.values[idx];
+        match slot {
+            Some(v) => {
+                debug_assert!(v.tag() == ValueTag::Object);
+                // Safety: we just ensured the value is an Object.
+                let boxed: &mut std::mem::ManuallyDrop<Box<WideEvent<K>>> = unsafe { &mut v.data.object };
+                &mut **boxed
+            }
+            None => unreachable!(),
         }
     }
 
-    fn new_child(&self) -> WideEvent<K> {
-        let mut values = SmallVec::new();
-        values.resize(K::MAX_KEYS, None);
+    pub(crate) fn new_child(&self) -> WideEvent<K> {
         WideEvent {
-            values,
+            values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: self.on_type_conflict,
         }
@@ -127,6 +136,7 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn inc(&mut self, key: K) {
         let idx = key.as_index();
+        self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
             Some(v) => match v.tag() {
                 ValueTag::U64 => Value::from(unsafe { v.data.u } + 1),
@@ -142,6 +152,7 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn dec(&mut self, key: K) {
         let idx = key.as_index();
+        self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
             Some(v) => match v.tag() {
                 ValueTag::U64 => {
@@ -160,6 +171,7 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn add_n(&mut self, key: K, n: i64) {
         let idx = key.as_index();
+        self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
             Some(v) => match v.tag() {
                 ValueTag::U64 => Value::from(unsafe { v.data.u }.saturating_add_signed(n)),
@@ -281,8 +293,10 @@ impl<K: Key> serde::Serialize for WideEvent<K> {
         let total = present + if self.log_entries.is_empty() { 0 } else { 1 };
         let mut map = serializer.serialize_map(Some(total))?;
         for (i, key) in K::KEYS.iter().enumerate() {
-            if let Some(value) = &self.values[i] {
-                map.serialize_entry(key.as_str(), value)?;
+            if i < self.values.len() {
+                if let Some(value) = &self.values[i] {
+                    map.serialize_entry(key.as_str(), value)?;
+                }
             }
         }
         if !self.log_entries.is_empty() {
@@ -308,14 +322,16 @@ fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::
     w.write_all(b"{")?;
     let mut first = true;
     for (i, key) in K::KEYS.iter().enumerate() {
-        if let Some(val) = &ev.values[i] {
-            if !first {
-                w.write_all(b",")?;
+        if i < ev.values.len() {
+            if let Some(val) = &ev.values[i] {
+                if !first {
+                    w.write_all(b",")?;
+                }
+                first = false;
+                write_json_str(w, key.as_str())?;
+                w.write_all(b":")?;
+                write_value(val, w)?;
             }
-            first = false;
-            write_json_str(w, key.as_str())?;
-            w.write_all(b":")?;
-            write_value(val, w)?;
         }
     }
     if !ev.log_entries.is_empty() {

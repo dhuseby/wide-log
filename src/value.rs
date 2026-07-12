@@ -136,6 +136,17 @@ impl<K: Key> Value<K> {
             None
         }
     }
+
+    /// Returns a reference to the Array if this value is an Array.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn as_array_ref(&self) -> Option<&SmallVec<[Value<K>; 8]>> {
+        if self.tag == ValueTag::Array {
+            Some(unsafe { &**self.data.array })
+        } else {
+            None
+        }
+    }
 }
 
 impl<K: Key> Clone for Value<K> {
