@@ -38,7 +38,7 @@ fn parse(slot: &CaptureSlot) -> sonic_rs::Value {
 #[test]
 fn all_log_level_macros_literal() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("info message");
     warn!("warn message");
@@ -66,7 +66,7 @@ fn all_log_level_macros_literal() {
 #[test]
 fn all_log_level_macros_format_args() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("info {}", 1);
     warn!("warn {}", 2);
@@ -88,7 +88,7 @@ fn all_log_level_macros_format_args() {
 #[test]
 fn log_entries_accumulate_in_order() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("first");
     warn!("second");
@@ -117,7 +117,7 @@ fn log_entries_accumulate_in_order() {
 #[test]
 fn wl_set_all_value_types() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     wl_set!("service.name", "string-val");
     wl_set!("status", "ok");
@@ -138,7 +138,7 @@ fn wl_set_all_value_types() {
 #[test]
 fn wl_set_overwrites_existing() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     wl_set!("status", "first");
     wl_set!("status", "second");
@@ -153,7 +153,7 @@ fn wl_set_overwrites_existing() {
 #[test]
 fn wl_set_with_string_value() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     let owned = String::from("owned-string");
     wl_set!("service.name", owned);
@@ -169,7 +169,7 @@ fn wl_set_with_string_value() {
 #[test]
 fn wl_set_with_unit_sets_null() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     wl_set!("status", "not-null");
     wl_set!("status", ());
@@ -185,7 +185,7 @@ fn wl_set_with_unit_sets_null() {
 #[test]
 fn wl_inc_initializes_to_one() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_inc!("requests");
     drop(_guard);
     let parsed = parse(&slot);
@@ -195,7 +195,7 @@ fn wl_inc_initializes_to_one() {
 #[test]
 fn wl_inc_increments_existing_u64() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("requests", 10u64);
     wl_inc!("requests");
     wl_inc!("requests");
@@ -207,7 +207,7 @@ fn wl_inc_increments_existing_u64() {
 #[test]
 fn wl_dec_initializes_to_minus_one() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_dec!("retries");
     drop(_guard);
     let parsed = parse(&slot);
@@ -217,7 +217,7 @@ fn wl_dec_initializes_to_minus_one() {
 #[test]
 fn wl_dec_decrements_existing() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("retries", 5u64);
     wl_dec!("retries");
     wl_dec!("retries");
@@ -229,7 +229,7 @@ fn wl_dec_decrements_existing() {
 #[test]
 fn wl_dec_does_not_go_negative_from_u64() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("retries", 1u64);
     wl_dec!("retries");
     drop(_guard);
@@ -240,7 +240,7 @@ fn wl_dec_does_not_go_negative_from_u64() {
 #[test]
 fn wl_dec_from_i64() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("retries", -3i64);
     wl_dec!("retries");
     drop(_guard);
@@ -251,7 +251,7 @@ fn wl_dec_from_i64() {
 #[test]
 fn wl_add_positive_to_absent() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_add!("requests", 42);
     drop(_guard);
     let parsed = parse(&slot);
@@ -261,7 +261,7 @@ fn wl_add_positive_to_absent() {
 #[test]
 fn wl_add_negative_to_absent() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_add!("retries", -5);
     drop(_guard);
     let parsed = parse(&slot);
@@ -271,7 +271,7 @@ fn wl_add_negative_to_absent() {
 #[test]
 fn wl_add_to_existing_u64() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("requests", 100u64);
     wl_add!("requests", 50);
     wl_add!("requests", -30);
@@ -283,7 +283,7 @@ fn wl_add_to_existing_u64() {
 #[test]
 fn wl_add_to_non_numeric_overwrites() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("status", "ok");
     wl_add!("status", 5);
     drop(_guard);
@@ -296,7 +296,7 @@ fn wl_add_to_non_numeric_overwrites() {
 #[test]
 fn wl_null_sets_null() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_null!("status");
     drop(_guard);
     let parsed = parse(&slot);
@@ -306,7 +306,7 @@ fn wl_null_sets_null() {
 #[test]
 fn wl_null_overwrites_existing() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_set!("status", "ok");
     wl_null!("status");
     drop(_guard);
@@ -317,7 +317,7 @@ fn wl_null_overwrites_existing() {
 #[test]
 fn wl_null_nested_path() {
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
     wl_null!("service.name");
     drop(_guard);
     let parsed = parse(&slot);
@@ -370,7 +370,7 @@ fn info_shadows_tracing_info() {
     use tracing::info as _;
 
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     // This should use the wide-log `info!` macro (defined by `wide_log!`).
     info!("shadowed by wide-log");
@@ -401,7 +401,7 @@ fn all_log_macros_shadow_tracing() {
     use tracing::{debug as _, error as _, info as _, trace as _, warn as _};
 
     let (slot, emit) = capture();
-    let _guard = WideLogGuard::new_with_emit(emit);
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     // Unqualified calls should use wide-log macros.
     info!("i");
@@ -433,28 +433,8 @@ fn all_log_macros_shadow_tracing() {
 
 #[test]
 fn default_emit_uses_real_tracing_macro() {
-    // When WideLogGuard::new() is used (with default_emit), the event should
-    // be emitted via ::tracing::info!, NOT appended to the log list. If
-    // default_emit accidentally used the shadowing `info!` macro, it would
-    // try to append to the log list of the event being emitted — which would
-    // either do nothing (since current() is None after drop restores the
-    // pointer) or cause infinite recursion. This test verifies that the
-    // default emit produces a tracing log line, not a log entry.
-
-    // We can't easily capture tracing output without a layer, but we can
-    // verify that using WideLogGuard::new() (which uses default_emit) does
-    // not panic and does not produce a "log" key in the event (since
-    // default_emit serializes and sends to tracing, it doesn't append to
-    // the log list).
-    //
-    // Actually, the "log" key in the serialized event depends on whether
-    // the user called info!() etc. — not on default_emit. So we verify:
-    // 1. WideLogGuard::new() works (default_emit calls ::tracing::info!).
-    // 2. If we add log entries, they appear in the serialized JSON (not
-    //    swallowed by default_emit).
-
-    // Just verify new() + info! + drop works without panic.
-    let _guard = WideLogGuard::new();
+    // Just verify builder().build() + info! + drop works without panic.
+    let _guard = WideLogGuard::builder().build();
     info!("test message via default emit");
     drop(_guard);
     // If default_emit used the shadowing info!, it would be a no-op
@@ -464,17 +444,7 @@ fn default_emit_uses_real_tracing_macro() {
 
 #[test]
 fn default_emit_does_not_cause_infinite_recursion() {
-    // The default_emit function uses ::tracing::info! (fully qualified).
-    // If it used the shadowing `info!` macro, it would call current()
-    // which would be None (guard is being dropped), so it would be a no-op.
-    // But if somehow current() was still Some, it would append a log entry
-    // to the event being emitted, which would change the serialization...
-    // but not cause infinite recursion since it doesn't re-emit.
-    //
-    // The key test is: default_emit + tracing::info! in the same scope
-    // should work without issues.
-
-    let _guard = WideLogGuard::new();
+    let _guard = WideLogGuard::builder().build();
 
     // Call the real tracing::info! — this should go to tracing, not the log list.
     ::tracing::info!("real tracing message");

@@ -6,11 +6,13 @@ wide_log!({
 });
 
 fn main() {
-    let _guard = WideLogGuard::new_with_emit(|ev| {
-        if let Ok(json) = ev.to_json() {
-            println!("{json}");
-        }
-    });
+    let _guard = WideLogGuard::builder()
+        .with_emit(|ev| {
+            if let Ok(json) = ev.to_json() {
+                println!("{json}");
+            }
+        })
+        .build();
 
     wl_set!("service.name", "example-service");
     wl_inc!("requests");

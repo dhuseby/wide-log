@@ -13,6 +13,7 @@ proc-macro = true
 
 [features]
 tokio = []
+uuid = []
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

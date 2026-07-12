@@ -8,6 +8,7 @@ pub fn generate(root: JsonNode, tokio: bool) -> Result<TokenStream2, syn::Error>
     ctx.walk(&root, &[])?;
 
     ctx.auto_add_duration(&root)?;
+    ctx.auto_add_event(&root)?;
 
     ctx.validate()?;
 
@@ -49,6 +50,9 @@ struct GenContext {
     defaults: Vec<DefaultEntry>,
     duration_segments: Vec<String>,
     has_duration_marker: bool,
+    timestamp_segments: Vec<String>,
+    id_segments: Vec<String>,
+    has_event_key: bool,
 }
 
 impl GenContext {
@@ -61,6 +65,9 @@ impl GenContext {
             defaults: Vec::new(),
             duration_segments: Vec::new(),
             has_duration_marker: false,
+            timestamp_segments: Vec::new(),
+            id_segments: Vec::new(),
+            has_event_key: false,
         }
     }
 
@@ -272,6 +279,106 @@ impl GenContext {
         }
     }
 
+    fn auto_add_event(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
+        match root {
+            JsonNode::Object(entries) => {
+                let has_event = entries.iter().any(|(k, _)| k == "event");
+                if !has_event {
+                    self.add_event_subtree();
+                } else {
+                    let event_node = entries
+                        .iter()
+                        .find(|(k, _)| k == "event")
+                        .map(|(_, v)| v)
+                        .unwrap();
+                    self.resolve_event_subtree(event_node)?;
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn add_event_subtree(&mut self) {
+        let event_seg = "event".to_string();
+        let timestamp_seg = "timestamp".to_string();
+        let id_seg = "id".to_string();
+        self.add_key(&event_seg);
+        self.add_key(&timestamp_seg);
+        self.add_key(&id_seg);
+        self.add_path(&[event_seg.clone()]);
+        self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
+        self.add_path(&[event_seg.clone(), id_seg.clone()]);
+        self.timestamp_segments = vec![event_seg, timestamp_seg];
+        self.id_segments = vec!["event".to_string(), id_seg];
+        self.has_event_key = true;
+    }
+
+    fn resolve_event_subtree(&mut self, node: &JsonNode) -> Result<(), syn::Error> {
+        let event_seg = "event".to_string();
+        match node {
+            JsonNode::Object(entries) => {
+                self.add_key(&event_seg);
+                self.add_path(&[event_seg.clone()]);
+
+                if entries.is_empty() {
+                    self.add_event_subtree();
+                    return Ok(());
+                }
+
+                let has_timestamp = entries.iter().any(|(k, _)| k == "timestamp");
+                let has_id = entries.iter().any(|(k, _)| k == "id");
+
+                if !has_timestamp {
+                    let timestamp_seg = "timestamp".to_string();
+                    self.add_key(&timestamp_seg);
+                    self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
+                    self.timestamp_segments = vec![event_seg.clone(), timestamp_seg];
+                } else {
+                    let ts_node = entries
+                        .iter()
+                        .find(|(k, _)| k == "timestamp")
+                        .map(|(_, v)| v)
+                        .unwrap();
+                    self.walk(ts_node, &[event_seg.clone(), "timestamp".to_string()])?;
+                    self.timestamp_segments =
+                        vec![event_seg.clone(), "timestamp".to_string()];
+                }
+
+                if !has_id {
+                    let id_seg = "id".to_string();
+                    self.add_key(&id_seg);
+                    self.add_path(&[event_seg.clone(), id_seg.clone()]);
+                    self.id_segments = vec![event_seg.clone(), id_seg];
+                } else {
+                    let id_node = entries
+                        .iter()
+                        .find(|(k, _)| k == "id")
+                        .map(|(_, v)| v)
+                        .unwrap();
+                    self.walk(id_node, &[event_seg.clone(), "id".to_string()])?;
+                    self.id_segments = vec![event_seg.clone(), "id".to_string()];
+                }
+
+                for (k, v) in entries {
+                    if k != "timestamp" && k != "id" {
+                        let p = vec![event_seg.clone(), k.clone()];
+                        self.walk(v, &p)?;
+                    }
+                }
+
+                self.has_event_key = true;
+            }
+            _ => {
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "\"event\" key must be an object, e.g. \"event\": { \"timestamp\": null, \"id\": null }",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), syn::Error> {
         if !self.has_duration_marker {
             return Err(syn::Error::new(
@@ -283,6 +390,18 @@ impl GenContext {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 "internal error: duration path is empty",
+            ));
+        }
+        if self.timestamp_segments.is_empty() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "internal error: timestamp path is empty",
+            ));
+        }
+        if self.id_segments.is_empty() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "internal error: id path is empty",
             ));
         }
         Ok(())
@@ -305,6 +424,24 @@ impl GenContext {
 
         let duration_path_idents: Vec<TokenStream2> = self
             .duration_segments
+            .iter()
+            .map(|s| {
+                let ident = format_ident!("{}", to_pascal_case(s));
+                quote! { EventKey::#ident }
+            })
+            .collect();
+
+        let timestamp_path_idents: Vec<TokenStream2> = self
+            .timestamp_segments
+            .iter()
+            .map(|s| {
+                let ident = format_ident!("{}", to_pascal_case(s));
+                quote! { EventKey::#ident }
+            })
+            .collect();
+
+        let id_path_idents: Vec<TokenStream2> = self
+            .id_segments
             .iter()
             .map(|s| {
                 let ident = format_ident!("{}", to_pascal_case(s));
@@ -352,7 +489,7 @@ impl GenContext {
                     }
                 };
                 quote! {
-                    inner.add_path(&[#(#segs),*], #val);
+                    event.add_path(&[#(#segs),*], #val);
                 }
             })
             .collect();
@@ -375,6 +512,8 @@ impl GenContext {
                 const MAX_KEYS: usize = #max_keys;
                 fn as_index(self) -> usize { self as usize }
                 const DURATION_PATH: &'static [Self] = &[#(#duration_path_idents),*];
+                const TIMESTAMP_PATH: &'static [Self] = &[#(#timestamp_path_idents),*];
+                const ID_PATH: &'static [Self] = &[#(#id_path_idents),*];
             }
         };
 
@@ -418,47 +557,95 @@ impl GenContext {
                 for WideLogGuard<F> {}
         };
 
-        let guard_new = quote! {
-            impl WideLogGuard<fn(&::wide_log::WideEvent<EventKey>)> {
-                pub fn new() -> Self {
-                    Self::new_with_emit(default_emit)
+        let default_id_fn = quote! {
+            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string())
+        };
+
+        let builder_struct = quote! {
+            pub struct WideLogGuardBuilder<
+                F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static = fn(&::wide_log::WideEvent<EventKey>),
+            > {
+                tz: ::wide_log::__re_exports_core::chrono_tz::Tz,
+                id_fn: ::std::boxed::Box<dyn FnOnce() -> String + Send>,
+                emit_fn: F,
+            }
+        };
+
+        let builder_impl = quote! {
+            impl WideLogGuardBuilder<fn(&::wide_log::WideEvent<EventKey>)> {
+                fn new() -> Self {
+                    Self {
+                        tz: ::wide_log::__re_exports_core::chrono_tz::Tz::UTC,
+                        id_fn: #default_id_fn,
+                        emit_fn: default_emit,
+                    }
+                }
+            }
+
+            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
+                WideLogGuardBuilder<F>
+            {
+                pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::chrono_tz::Tz) -> Self {
+                    self.tz = tz;
+                    self
+                }
+
+                pub fn with_id<NewF: FnOnce() -> String + Send + 'static>(
+                    mut self,
+                    f: NewF,
+                ) -> Self {
+                    self.id_fn = ::std::boxed::Box::new(f);
+                    self
+                }
+
+                pub fn with_emit<NewF: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>(
+                    self,
+                    emit_fn: NewF,
+                ) -> WideLogGuardBuilder<NewF> {
+                    WideLogGuardBuilder {
+                        tz: self.tz,
+                        id_fn: self.id_fn,
+                        emit_fn,
+                    }
+                }
+
+                pub fn build(self) -> WideLogGuard<F> {
+                    let id_str = (self.id_fn)();
+                    let mut inner = ::std::boxed::Box::new(
+                        ::wide_log::ScopedGuard::new_with_tz(self.emit_fn, self.tz),
+                    );
+                    {
+                        use ::std::ops::DerefMut;
+                        let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
+                        #(#default_stmts)*
+                        event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
+                    }
+                    let ptr: *mut ::wide_log::WideEvent<EventKey> = {
+                        use ::std::ops::Deref;
+                        let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
+                        guard_ref.deref() as *const _ as *mut _
+                    };
+                    let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
+                    WideLogGuard { inner, prev_ptr }
                 }
             }
         };
 
-        let guard_new_with_emit = if default_stmts.is_empty() {
-            quote! {
-                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> WideLogGuard<F> {
-                    pub fn new_with_emit(emit_fn: F) -> Self {
-                        let inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
-                        let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                            use ::std::ops::Deref;
-                            let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
-                            guard_ref.deref() as *const _ as *mut _
-                        };
-                        let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
-                        Self { inner, prev_ptr }
-                    }
+        let builder_uuid = quote! {
+            #[cfg(feature = "uuid")]
+            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
+                WideLogGuardBuilder<F>
+            {
+                pub fn with_uuid(self) -> Self {
+                    self.with_id(|| ::uuid::Uuid::new_v4().to_string())
                 }
             }
-        } else {
-            quote! {
-                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> WideLogGuard<F> {
-                    pub fn new_with_emit(emit_fn: F) -> Self {
-                        let mut inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
-                        {
-                            use ::std::ops::DerefMut;
-                            let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
-                            #(#default_stmts)*
-                        }
-                        let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                            use ::std::ops::Deref;
-                            let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
-                            guard_ref.deref() as *const _ as *mut _
-                        };
-                        let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
-                        Self { inner, prev_ptr }
-                    }
+        };
+
+        let guard_builder_fn = quote! {
+            impl WideLogGuard<fn(&::wide_log::WideEvent<EventKey>)> {
+                pub fn builder() -> WideLogGuardBuilder<fn(&::wide_log::WideEvent<EventKey>)> {
+                    WideLogGuardBuilder::new()
                 }
             }
         };
@@ -501,11 +688,15 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let mut inner = ::std::boxed::Box::new(::wide_log::ScopedGuard::new(emit_fn));
+                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string();
+                    let mut inner = ::std::boxed::Box::new(
+                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
+                    );
                     {
                         use ::std::ops::DerefMut;
                         let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
                         #(#default_stmts)*
+                        event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
                     let ptr: *mut ::wide_log::WideEvent<EventKey> = {
                         use ::std::ops::Deref;
@@ -724,8 +915,10 @@ impl GenContext {
             #thread_local
             #default_emit
             #guard_struct
-            #guard_new
-            #guard_new_with_emit
+            #builder_struct
+            #builder_impl
+            #builder_uuid
+            #guard_builder_fn
             #guard_drop
             #current_fn
             #tokio_code

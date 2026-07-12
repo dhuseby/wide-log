@@ -39,18 +39,19 @@ wide_log!({
 fn main() {
     tracing_subscriber::fmt().init();
 
-    let _guard = WideLogGuard::new();
+    let _guard = WideLogGuard::builder().build();
 
     wl_inc!("requests");
 
     info!("request received");
     warn!("upstream slow");
 
-    // _guard drops here → duration.total_ms is set automatically,
-    // event is serialized to JSON, emitted via ::tracing::info!:
+    // _guard drops here → duration.total_ms and event.timestamp are set
+    // automatically, event is serialized to JSON, emitted via ::tracing::info!:
     //
     // {"service":{"name":"example-service","version":"1.0.0"},
     //  "duration":{"total_ms":42},"requests":1,
+    //  "event":{"timestamp":"2026-07-12T12:00:00.000Z","id":"01J6XK5R..."},
     //  "log":[{"level":"info","message":"request received"},
     //         {"level":"warn","message":"upstream slow"}]}
 }
@@ -58,7 +59,7 @@ fn main() {
 
 ### Auto-Added Keys
 
-The macro automatically adds two keys that every wide event needs:
+The macro automatically adds three keys that every wide event needs:
 
 1. **`"log"`** — the list of log entries accumulated by `info!()`, `warn!()`,
    etc. Handled entirely internally; the user never declares `"log"` in the
@@ -68,6 +69,61 @@ The macro automatically adds two keys that every wide event needs:
    does not declare `"duration"` in the JSON, the macro automatically adds
    `"duration": { "total_ms": duration! }`. The guard sets
    `duration.total_ms` to the elapsed milliseconds on drop.
+
+3. **`"event"`** — event metadata. If the user does not declare `"event"` in
+   the JSON, the macro automatically adds
+   `"event": { "timestamp": null, "id": null }`. The guard sets
+   `event.timestamp` to the current time as an RFC 3339 string on drop. The
+   builder sets `event.id` to a ULID string (or UUIDv4 with the `uuid` feature)
+   on `build()`.
+
+## Builder Pattern
+
+Use `WideLogGuard::builder()` to construct a guard. The builder allows
+specifying a custom timezone, ID generator, and emit function:
+
+```rust
+// Default: UTC timezone, ULID ID, tracing emit
+let _guard = WideLogGuard::builder().build();
+
+// Custom timezone
+use chrono_tz::Tz;
+let _guard = WideLogGuard::builder()
+    .with_timezone(Tz::America__New_York)
+    .build();
+
+// Custom ID generator
+let _guard = WideLogGuard::builder()
+    .with_id(|| "my-custom-id".to_string())
+    .build();
+
+// UUIDv4 ID (requires `uuid` feature)
+let _guard = WideLogGuard::builder()
+    .with_uuid()
+    .build();
+
+// Custom emit function
+let _guard = WideLogGuard::builder()
+    .with_emit(|ev| { println!("{}", ev.to_json().unwrap()); })
+    .build();
+
+// Combined
+let _guard = WideLogGuard::builder()
+    .with_timezone(Tz::America__New_York)
+    .with_id(|| "custom-id".to_string())
+    .with_emit(|ev| { println!("{}", ev.to_json().unwrap()); })
+    .build();
+```
+
+### Builder Methods
+
+| Method | Description | Default |
+|---|---|---|
+| `with_timezone(tz: chrono_tz::Tz)` | Timezone for timestamp formatting | `chrono_tz::Tz::UTC` |
+| `with_id(F: FnOnce() -> String)` | Custom ID generator closure | ULID via `ulid` crate |
+| `with_uuid()` | Use UUIDv4 for ID (requires `uuid` feature) | — |
+| `with_emit(F: FnOnce(&WideEvent)>)` | Custom emit function | `default_emit` (serialize + `::tracing::info!`) |
+| `build()` | Construct the guard | — |
 
 ## Usage
 
@@ -87,10 +143,10 @@ wide_log!({
 fn main() {
     tracing_subscriber::fmt().init();
 
-    // Create guard — takes no arguments. Sets default values from JSON
-    // (service.name = "example-service", service.version = "1.0.0")
-    // starts the timer:
-    let _guard = WideLogGuard::new();
+    // Create guard — builder().build() uses defaults (UTC, ULID, tracing emit).
+    // Sets default values from JSON (service.name = "example-service",
+    // service.version = "1.0.0") and starts the timer:
+    let _guard = WideLogGuard::builder().build();
 
     // Set per-request field values:
     wl_inc!("requests");
@@ -99,8 +155,8 @@ fn main() {
     info!("request received");
     warn!("upstream slow");
 
-    // _guard drops here → duration.total_ms is set automatically,
-    // event is serialized to JSON, emitted via ::tracing::info!.
+    // _guard drops here → duration.total_ms and event.timestamp are set
+    // automatically, event is serialized to JSON, emitted via ::tracing::info!.
 }
 ```
 
@@ -133,7 +189,7 @@ async fn handle_request() {
 
         info!("request completed");
     }).await;
-    // guard drops here → duration.total_ms set, event emitted
+    // guard drops here → duration.total_ms and event.timestamp set, event emitted
 }
 
 async fn fetch_upstream() {
@@ -182,7 +238,7 @@ async fn handle_request(id: u64) {
 
         info!("request {} completed", id);
     }).await;
-    // guard drops → event emitted with duration.total_ms
+    // guard drops → event emitted with duration and timestamp
 }
 ```
 
@@ -235,11 +291,12 @@ async fn main() {
 }
 ```
 
-**Why middleware, not `WideLogGuard::new()`:** `tokio::task_local!` has no
-imperative setter — you can only set a task-local value by wrapping a future
-with `.scope(value, future)`. The middleware provides that wrapper
-automatically. `WideLogGuard::new()` (the sync API) sets `thread_local!`,
-which is stale if a multi-threaded runtime moves the task to another thread.
+**Why middleware, not `WideLogGuard::builder().build()`:** `tokio::task_local!`
+has no imperative setter — you can only set a task-local value by wrapping a
+future with `.scope(value, future)`. The middleware provides that wrapper
+automatically. `WideLogGuard::builder().build()` (the sync API) sets
+`thread_local!`, which is stale if a multi-threaded runtime moves the task to
+another thread.
 
 **No special setup in nested calls:** any `info!()`, `warn!()`, `wl_set!`,
 etc. call — whether in the handler directly, in a called sync function, or
@@ -257,11 +314,13 @@ wide_log!({
 });
 
 fn main() {
-    let _guard = WideLogGuard::new_with_emit(|ev| {
-        if let Ok(json) = ev.to_json() {
-            println!("{json}");
-        }
-    });
+    let _guard = WideLogGuard::builder()
+        .with_emit(|ev| {
+            if let Ok(json) = ev.to_json() {
+                println!("{json}");
+            }
+        })
+        .build();
 
     wl_inc!("requests");
     info!("request received");
@@ -304,7 +363,7 @@ wide_log!({
 | `counter!` | This key is an incrementable counter. Initialized to 0 (absent). | No auto-set; `wl_inc!` initializes to 1. |
 | `null` | This key exists but has no default value. | No auto-set. |
 | `"literal"` | A string default value. | Set on creation as a `FastStr`. |
-| `123` | A numeric default value. | Set on creation as `U64` or `I64`. |
+| `123` | A numeric default value. | Set on creation as a `U64` or `I64`. |
 | `true`/`false` | A boolean default value. | Set on creation as `Bool`. |
 
 The `duration!` marker is **optional** — if not used, the macro defaults to
@@ -327,6 +386,19 @@ subtree. If absent, the macro adds `"total_ms": duration!`. If the user
 declares a `"duration"` object with only `null`/literal leaves and no
 `duration!`, the macro defaults `total_ms` to `duration!` (adding it if
 missing, or converting `"total_ms": null` to `"total_ms": duration!`).
+
+### Event Auto-Add Rules
+
+| User declares | Macro result |
+|---|---|
+| Nothing (no `"event"`) | Adds `"event": { "timestamp": null, "id": null }` |
+| `"event": {}` | Fills in `"timestamp": null, "id": null` |
+| `"event": { "timestamp": null, "id": null }` | Uses as-is |
+| `"event": { "source": null }` | Adds missing `"timestamp"` and `"id"`, keeps `"source"` |
+| `"event": "foo"` | **Error:** `"event"` must be an object |
+
+The guard sets `event.timestamp` to an RFC 3339 string on drop. The builder
+sets `event.id` to a ULID string (or UUIDv4 with `with_uuid()`) on `build()`.
 
 ### JSON Key to Enum Variant Naming
 
@@ -363,3 +435,10 @@ fully qualified path: `::tracing::info!(...)`.
 The generated `default_emit` function uses `::tracing::info!` (fully
 qualified) to avoid calling the shadowing `info!` macro, which would append to
 the log list instead of emitting the JSON line.
+
+## Features
+
+- `tokio` — enables async support: `scope()`, `scope_default()`,
+  `WideLogLayer` tower middleware, and `tokio::task_local!` storage.
+- `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
+  generation instead of the default ULID.

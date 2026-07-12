@@ -60,7 +60,7 @@ fn bench_guard_create_drop(c: &mut Criterion) {
     // With no-op emit: isolates guard overhead.
     group.bench_function("noop_emit", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             drop(black_box(_guard));
         })
     });
@@ -70,7 +70,7 @@ fn bench_guard_create_drop(c: &mut Criterion) {
         b.iter_batched(
             capture_emit,
             |(_slot, emit)| {
-                let _guard = WideLogGuard::new_with_emit(emit);
+                let _guard = WideLogGuard::builder().with_emit(emit).build();
                 drop(black_box(_guard));
             },
             BatchSize::SmallInput,
@@ -92,7 +92,7 @@ fn bench_wl_set_single(c: &mut Criterion) {
     // String value (most common case):
     group.bench_function("string", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("status", "ok");
             drop(black_box(_guard));
         })
@@ -101,7 +101,7 @@ fn bench_wl_set_single(c: &mut Criterion) {
     // U64 value:
     group.bench_function("u64", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("status", 200u64);
             drop(black_box(_guard));
         })
@@ -110,7 +110,7 @@ fn bench_wl_set_single(c: &mut Criterion) {
     // Bool value:
     group.bench_function("bool", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("flag", true);
             drop(black_box(_guard));
         })
@@ -127,7 +127,7 @@ fn bench_wl_set_nested(c: &mut Criterion) {
     // Two-segment path: "service.name"
     group.bench_function("two_segment", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("service.name", "my-service");
             drop(black_box(_guard));
         })
@@ -136,7 +136,7 @@ fn bench_wl_set_nested(c: &mut Criterion) {
     // Two-segment path in a different subtree: "http.method"
     group.bench_function("two_segment_http", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("http.method", "GET");
             drop(black_box(_guard));
         })
@@ -145,7 +145,7 @@ fn bench_wl_set_nested(c: &mut Criterion) {
     // Repeated sets to the same nested key (update path):
     group.bench_function("update_existing_nested", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("service.name", "a");
             wl_set!("service.name", "b");
             wl_set!("service.name", "c");
@@ -163,7 +163,7 @@ fn bench_wl_inc_dec(c: &mut Criterion) {
     // Single inc on absent counter:
     group.bench_function("inc_absent", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_inc!("requests");
             drop(black_box(_guard));
         })
@@ -172,7 +172,7 @@ fn bench_wl_inc_dec(c: &mut Criterion) {
     // Inc on existing counter (initial set + inc):
     group.bench_function("inc_existing", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_inc!("requests");
             wl_inc!("requests");
             wl_inc!("requests");
@@ -183,7 +183,7 @@ fn bench_wl_inc_dec(c: &mut Criterion) {
     // Dec:
     group.bench_function("dec_absent", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_dec!("retries");
             drop(black_box(_guard));
         })
@@ -192,7 +192,7 @@ fn bench_wl_inc_dec(c: &mut Criterion) {
     // wl_add!:
     group.bench_function("add_n", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_add!("requests", 10);
             wl_add!("requests", -3);
             drop(black_box(_guard));
@@ -209,7 +209,7 @@ fn bench_log_macros(c: &mut Criterion) {
     // Literal message (no formatting):
     group.bench_function("info_literal", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             info!("request received");
             drop(black_box(_guard));
         })
@@ -218,7 +218,7 @@ fn bench_log_macros(c: &mut Criterion) {
     // Formatted message (format! + FastStr allocation):
     group.bench_function("info_format", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             info!("request {} received in {}ms", 42, 15);
             drop(black_box(_guard));
         })
@@ -227,7 +227,7 @@ fn bench_log_macros(c: &mut Criterion) {
     // Multiple log entries (amortized push cost):
     group.bench_function("info_multiple", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             info!("request received");
             info!("processing started");
             warn!("upstream slow");
@@ -326,7 +326,7 @@ fn bench_full_lifecycle(c: &mut Criterion) {
     // No-op emit (accumulation only, no serialization):
     group.bench_function("noop_emit", |b| {
         b.iter(|| {
-            let guard = WideLogGuard::new_with_emit(noop_emit);
+            let guard = WideLogGuard::builder().with_emit(noop_emit).build();
             wl_set!("service.name", "my-service");
             wl_set!("http.method", "GET");
             wl_set!("http.path", "/api/users");
@@ -345,7 +345,7 @@ fn bench_full_lifecycle(c: &mut Criterion) {
         b.iter_batched(
             capture_emit,
             |(_slot, emit)| {
-                let guard = WideLogGuard::new_with_emit(emit);
+                let guard = WideLogGuard::builder().with_emit(emit).build();
                 wl_set!("service.name", "my-service");
                 wl_set!("http.method", "GET");
                 wl_set!("http.path", "/api/users");
@@ -367,7 +367,7 @@ fn bench_full_lifecycle(c: &mut Criterion) {
         b.iter_batched(
             capture_emit,
             |(slot, emit)| {
-                let guard = WideLogGuard::new_with_emit(emit);
+                let guard = WideLogGuard::builder().with_emit(emit).build();
                 wl_set!("service.name", "my-service");
                 wl_set!("http.method", "GET");
                 wl_set!("http.path", "/api/users");
@@ -396,7 +396,7 @@ fn bench_current_access(c: &mut Criterion) {
 
     group.bench_function("with_guard", |b| {
         b.iter(|| {
-            let _guard = WideLogGuard::new_with_emit(noop_emit);
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
             for _ in 0..100 {
                 let _ev = current();
                 black_box(_ev);
@@ -423,7 +423,7 @@ fn bench_wl_set_repeat(c: &mut Criterion) {
     for n in [1, 5, 10, 20] {
         group.bench_with_input(BenchmarkId::new("distinct_keys", n), &n, |b, &n| {
             b.iter(|| {
-                let _guard = WideLogGuard::new_with_emit(noop_emit);
+                let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
                 for i in 0..n {
                     match i % 6 {
                         0 => wl_set!("status", "ok"),
@@ -442,7 +442,7 @@ fn bench_wl_set_repeat(c: &mut Criterion) {
     for n in [1, 5, 10, 20] {
         group.bench_with_input(BenchmarkId::new("same_key_update", n), &n, |b, &n| {
             b.iter(|| {
-                let _guard = WideLogGuard::new_with_emit(noop_emit);
+                let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
                 for _ in 0..n {
                     wl_set!("status", "ok");
                 }

@@ -11,7 +11,7 @@ wide_log!({
 fn main() {
     tracing_subscriber::fmt().init();
 
-    let _guard = WideLogGuard::new();
+    let _guard = WideLogGuard::builder().build();
 
     wl_set!("service.name", "example-service");
     wl_inc!("requests");

@@ -347,9 +347,13 @@ mod tests {
     // 24-variant key used to verify the inline SmallVec capacity.
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
     #[repr(u8)]
+    #[allow(dead_code)]
     enum BigKey {
         Duration,
         TotalMs,
+        Event,
+        Timestamp,
+        Id,
         K2,
         K3,
         K4,
@@ -371,7 +375,6 @@ mod tests {
         K20,
         K21,
         K22,
-        K23,
     }
 
     impl crate::key::Key for BigKey {
@@ -379,6 +382,9 @@ mod tests {
             match self {
                 BigKey::Duration => "duration",
                 BigKey::TotalMs => "total_ms",
+                BigKey::Event => "event",
+                BigKey::Timestamp => "timestamp",
+                BigKey::Id => "id",
                 BigKey::K2 => "k2",
                 BigKey::K3 => "k3",
                 BigKey::K4 => "k4",
@@ -400,14 +406,15 @@ mod tests {
                 BigKey::K20 => "k20",
                 BigKey::K21 => "k21",
                 BigKey::K22 => "k22",
-                BigKey::K23 => "k23",
             }
         }
-        const MAX_KEYS: usize = 24;
+        const MAX_KEYS: usize = 25;
         fn as_index(self) -> usize {
             self as usize
         }
         const DURATION_PATH: &'static [Self] = &[BigKey::Duration, BigKey::TotalMs];
+        const TIMESTAMP_PATH: &'static [Self] = &[BigKey::Event, BigKey::Timestamp];
+        const ID_PATH: &'static [Self] = &[BigKey::Event, BigKey::Id];
     }
 
     #[test]
@@ -571,6 +578,9 @@ mod tests {
         let keys = [
             BigKey::Duration,
             BigKey::TotalMs,
+            BigKey::Event,
+            BigKey::Timestamp,
+            BigKey::Id,
             BigKey::K2,
             BigKey::K3,
             BigKey::K4,
@@ -590,9 +600,6 @@ mod tests {
             BigKey::K18,
             BigKey::K19,
             BigKey::K20,
-            BigKey::K21,
-            BigKey::K22,
-            BigKey::K23,
         ];
         let mut e = WideEvent::<BigKey>::new();
         for (i, &k) in keys.iter().enumerate() {

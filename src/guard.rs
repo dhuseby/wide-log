@@ -1,14 +1,18 @@
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 
+use chrono_tz::Tz;
+
 use crate::key::Key;
 use crate::wide_event::WideEvent;
 
 /// RAII guard that owns a [`WideEvent`] and emits it on drop.
 ///
 /// The guard starts a timer on creation. On drop, it sets the duration field
-/// (via [`Key::DURATION_PATH`]) to the elapsed milliseconds and calls the
-/// emit function with a reference to the event.
+/// (via [`Key::DURATION_PATH`]) to the elapsed milliseconds, sets the
+/// timestamp field (via [`Key::TIMESTAMP_PATH`]) to the current time as an
+/// RFC 3339 string in the guard's timezone, and calls the emit function
+/// with a reference to the event.
 ///
 /// Implements [`Deref`] / [`DerefMut`] to [`WideEvent`] so you can call
 /// `add`, `add_path`, `inc`, etc. directly on the guard.
@@ -24,6 +28,7 @@ where
 {
     event: WideEvent<K>,
     start: Instant,
+    tz: Tz,
     emit_fn: Option<F>,
 }
 
@@ -31,32 +36,43 @@ impl<K: Key, F> ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
-    /// Creates a new guard with the given emit function.
+    /// Creates a new guard with the given emit function and UTC timezone.
     ///
     /// The timer starts immediately. On drop, the guard sets
-    /// `K::DURATION_PATH` to the elapsed milliseconds and calls `emit_fn`.
+    /// `K::DURATION_PATH` to the elapsed milliseconds, sets
+    /// `K::TIMESTAMP_PATH` to the current UTC time as RFC 3339, and
+    /// calls `emit_fn`.
     pub fn new(emit_fn: F) -> Self {
+        Self::new_with_tz(emit_fn, Tz::UTC)
+    }
+
+    /// Creates a new guard with the given emit function and timezone.
+    ///
+    /// The timezone is used to format the timestamp set on drop.
+    pub fn new_with_tz(emit_fn: F, tz: Tz) -> Self {
         Self {
             event: WideEvent::new(),
             start: Instant::now(),
+            tz,
             emit_fn: Some(emit_fn),
         }
     }
 
-    /// Creates a new guard with the given emit function and a type-conflict
-    /// callback.
+    /// Creates a new guard with the given emit function, timezone, and a
+    /// type-conflict callback.
     ///
     /// The callback is fired when `object()` is called on a key that already
     /// has a non-object value. See [`WideEvent::new_with_warnings`].
     ///
     /// [`WideEvent::new_with_warnings`]: crate::WideEvent::new_with_warnings
-    pub fn new_with_warnings<G>(emit_fn: F, on_type_conflict: G) -> Self
+    pub fn new_with_warnings<G>(emit_fn: F, tz: Tz, on_type_conflict: G) -> Self
     where
         G: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static,
     {
         Self {
             event: WideEvent::new_with_warnings(on_type_conflict),
             start: Instant::now(),
+            tz,
             emit_fn: Some(emit_fn),
         }
     }
@@ -91,6 +107,9 @@ where
     fn drop(&mut self) {
         let duration_ms = self.start.elapsed().as_millis() as u64;
         self.event.add_path(K::DURATION_PATH, duration_ms);
+        let now = chrono::Utc::now().with_timezone(&self.tz);
+        let ts = now.to_rfc3339();
+        self.event.add_path(K::TIMESTAMP_PATH, ts);
         if let Some(emit) = self.emit_fn.take() {
             emit(&self.event);
         }
@@ -128,6 +147,21 @@ mod tests {
     }
 
     #[test]
+    fn guard_sets_timestamp() {
+        let (slot, emit) = capture_json();
+        drop(ScopedGuard::<TestKey, _>::new(emit));
+        let json = slot.lock().unwrap().clone().unwrap();
+        let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+        use sonic_rs::JsonValueTrait;
+        let ts = parsed["event"]["timestamp"].as_str().unwrap();
+        assert!(!ts.is_empty(), "timestamp should not be empty");
+        assert!(
+            ts.contains('T'),
+            "timestamp should be RFC 3339 (contain 'T'): {ts}"
+        );
+    }
+
+    #[test]
     fn guard_deref_add() {
         let (slot, emit) = capture_json();
         let mut g = ScopedGuard::<TestKey, _>::new(emit);
@@ -153,7 +187,7 @@ mod tests {
         let counter = Arc::new(Mutex::new(0u32));
         let c = counter.clone();
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, move |_event, _key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, move |_event, _key| {
             *c.lock().unwrap() += 1;
         });
         g.add(TestKey::Details, true);
@@ -166,7 +200,7 @@ mod tests {
     #[test]
     fn guard_new_with_warnings_callback_can_mutate_event() {
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, |event, _key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, _key| {
             event.add(TestKey::Flag, true);
         });
         g.add(TestKey::Details, 42u64);
@@ -182,7 +216,7 @@ mod tests {
         use smallvec::smallvec;
 
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, |event, key| {
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, key| {
             let warning = format!("{} type conflict", key.as_str());
             let entry = Box::new(Value::from(warning));
             for (k, v) in &mut event.entries {
@@ -232,6 +266,21 @@ mod tests {
         assert!(
             total_ms >= 1,
             "duration.total_ms should be >= 1, got {total_ms}"
+        );
+    }
+
+    #[test]
+    fn guard_timestamp_reflects_timezone() {
+        let (slot, emit) = capture_json();
+        let g = ScopedGuard::<TestKey, _>::new_with_tz(emit, Tz::America__New_York);
+        drop(g);
+        let json = slot.lock().unwrap().clone().unwrap();
+        let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+        use sonic_rs::JsonValueTrait;
+        let ts = parsed["event"]["timestamp"].as_str().unwrap();
+        assert!(
+            ts.contains("-04:00") || ts.contains("-05:00"),
+            "timestamp should reflect America/New_York offset: {ts}"
         );
     }
 }
