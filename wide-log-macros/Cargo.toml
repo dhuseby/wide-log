@@ -1,7 +1,12 @@
 [package]
 name = "wide-log-macros"
 version = "0.1.0"
+authors = ["David Grantham"]
 edition = "2024"
+description = "Macros for a fast wide event logging crate a la loggingsucks.com"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/dhuseby/wide-log"
 
 [lib]
 proc-macro = true
