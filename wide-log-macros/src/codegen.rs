@@ -676,17 +676,34 @@ impl GenContext {
 
         let current_fn = if tokio {
             quote! {
+                #[inline(always)]
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    if let Ok(Some(ptr)) = TASK_EVENT.try_with(|c| c.get()) {
+                    let ptr = if let Ok(p) = TASK_EVENT.try_with(|c| c.get_ptr()) {
+                        p
+                    } else {
+                        ::std::ptr::null_mut()
+                    };
+                    if !ptr.is_null() {
                         return Some(unsafe { &mut *ptr });
                     }
-                    CURRENT_EVENT.with(|c| unsafe { c.deref_mut() })
+                    let ptr = CURRENT_EVENT.with(|c| c.get_ptr());
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { &mut *ptr })
+                    }
                 }
             }
         } else {
             quote! {
+                #[inline(always)]
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    CURRENT_EVENT.with(|c| unsafe { c.deref_mut() })
+                    let ptr = CURRENT_EVENT.with(|c| c.get_ptr());
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { &mut *ptr })
+                    }
                 }
             }
         };

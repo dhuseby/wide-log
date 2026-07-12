@@ -43,6 +43,12 @@ impl<T> ContextCell<T> {
         if ptr.is_null() { None } else { Some(ptr) }
     }
 
+    /// Returns the stored raw pointer (null if unset).
+    #[inline]
+    pub fn get_ptr(&self) -> *mut T {
+        self.ptr.get()
+    }
+
     /// Sets the stored pointer. Returns the previous pointer.
     #[inline]
     pub fn replace(&self, ptr: *mut T) -> *mut T {
