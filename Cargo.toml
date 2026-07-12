@@ -12,6 +12,8 @@ repository = "https://github.com/dhuseby/wide-log"
 chrono = "0.4"
 chrono-tz = "0.10"
 faststr = "0"
+itoa = "1"
+ryu = "1"
 serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1", features = ["union", "write", "serde"] }
 sonic-rs = "0"

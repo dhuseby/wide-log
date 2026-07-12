@@ -34,6 +34,10 @@ pub trait Key: Copy + Eq + 'static {
     /// All keys in enum order, indexed by `as_index`.
     const KEYS: &'static [Self];
 
+    /// All key strings in enum order, indexed by `as_index`.
+    /// Used for O(1) `as_str()` via array index instead of a match.
+    const KEY_STRS: &'static [&'static str];
+
     /// Returns the discriminant index of this key.
     fn as_index(self) -> usize;
 
@@ -110,6 +114,23 @@ pub(crate) mod test_support {
             TestKey::Tag,
             TestKey::Count,
             TestKey::Flag,
+        ];
+
+        const KEY_STRS: &'static [&'static str] = &[
+            "duration",
+            "total_ms",
+            "event",
+            "timestamp",
+            "id",
+            "service",
+            "name",
+            "version",
+            "requests",
+            "status",
+            "details",
+            "tag",
+            "count",
+            "flag",
         ];
 
         fn as_index(self) -> usize {

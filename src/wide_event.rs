@@ -249,6 +249,19 @@ impl<K: Key> WideEvent<K> {
         sonic_rs::to_string(self).map_err(|e| Error::Serialize(e.to_string()))
     }
 
+    /// Serialize directly to a writer, bypassing serde entirely.
+    /// Uses itoa/ryu for zero-allocation number formatting.
+    pub fn serialize_to<W: std::io::Write>(&self, w: &mut W) -> Result<(), Error> {
+        write_event(self, w).map_err(|e| Error::Serialize(e.to_string()))
+    }
+
+    /// Serialize to a JSON string via the direct serializer (no serde).
+    pub fn to_json_direct(&self) -> Result<String, Error> {
+        let mut buf = Vec::with_capacity(256);
+        self.serialize_to(&mut buf).map_err(|e| Error::Serialize(e.to_string()))?;
+        Ok(String::from_utf8(buf).map_err(|e| Error::Serialize(e.to_string()))?)
+    }
+
     /// Count of present entries (alias for `len()`).
     pub(crate) fn count_present(&self) -> usize {
         self.values.iter().filter(|v| v.is_some()).count()
@@ -287,6 +300,115 @@ impl<K: Key> std::fmt::Debug for WideEvent<K> {
             .field("has_conflict_callback", &self.on_type_conflict.is_some())
             .finish()
     }
+}
+
+// ── Direct serializer (bypasses serde) ──
+
+fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::io::Result<()> {
+    w.write_all(b"{")?;
+    let mut first = true;
+    for (i, key) in K::KEYS.iter().enumerate() {
+        if let Some(val) = &ev.values[i] {
+            if !first {
+                w.write_all(b",")?;
+            }
+            first = false;
+            write_json_str(w, key.as_str())?;
+            w.write_all(b":")?;
+            write_value(val, w)?;
+        }
+    }
+    if !ev.log_entries.is_empty() {
+        if !first {
+            w.write_all(b",")?;
+        }
+        w.write_all(b"\"log\":")?;
+        w.write_all(b"[")?;
+        for (j, entry) in ev.log_entries.iter().enumerate() {
+            if j > 0 {
+                w.write_all(b",")?;
+            }
+            w.write_all(b"{")?;
+            w.write_all(b"\"level\":")?;
+            write_json_str(w, entry.level)?;
+            w.write_all(b",\"message\":")?;
+            write_json_str(w, entry.message.as_str())?;
+            w.write_all(b"}")?;
+        }
+        w.write_all(b"]")?;
+    }
+    w.write_all(b"}")?;
+    Ok(())
+}
+
+fn write_value<K: Key, W: std::io::Write>(val: &crate::value::Value<K>, w: &mut W) -> std::io::Result<()> {
+    use crate::value::ValueTag;
+    match val.tag() {
+        ValueTag::Null => w.write_all(b"null"),
+        ValueTag::Bool => {
+            if unsafe { val.data.b } {
+                w.write_all(b"true")
+            } else {
+                w.write_all(b"false")
+            }
+        }
+        ValueTag::I64 => {
+            let mut buf = itoa::Buffer::new();
+            w.write_all(buf.format(unsafe { val.data.i }).as_bytes())
+        }
+        ValueTag::U64 => {
+            let mut buf = itoa::Buffer::new();
+            w.write_all(buf.format(unsafe { val.data.u }).as_bytes())
+        }
+        ValueTag::F64 => {
+            let mut buf = ryu::Buffer::new();
+            w.write_all(buf.format(unsafe { val.data.f }).as_bytes())
+        }
+        ValueTag::Str => {
+            write_json_str(w, unsafe { &val.data.s }.as_str())
+        }
+        ValueTag::StaticStr => {
+            write_json_str(w, unsafe { val.data.static_str })
+        }
+        ValueTag::Array => {
+            let arr = unsafe { &*val.data.array };
+            w.write_all(b"[")?;
+            for (i, v) in arr.iter().enumerate() {
+                if i > 0 {
+                    w.write_all(b",")?;
+                }
+                write_value(v, w)?;
+            }
+            w.write_all(b"]")?;
+            Ok(())
+        }
+        ValueTag::Object => {
+            let obj = unsafe { &*val.data.object };
+            write_event(obj, w)
+        }
+    }
+}
+
+/// Write a JSON-escaped string.
+fn write_json_str<W: std::io::Write>(w: &mut W, s: &str) -> std::io::Result<()> {
+    w.write_all(b"\"")?;
+    for c in s.bytes() {
+        match c {
+            b'"' => w.write_all(b"\\\"")?,
+            b'\\' => w.write_all(b"\\\\")?,
+            b'\n' => w.write_all(b"\\n")?,
+            b'\t' => w.write_all(b"\\t")?,
+            b'\r' => w.write_all(b"\\r")?,
+            0x08 => w.write_all(b"\\b")?,
+            0x0c => w.write_all(b"\\f")?,
+            c if c < 0x20 => {
+                w.write_all(format!("\\u{:04x}", c).as_bytes())?;
+            }
+            c => w.write_all(&[c])?,
+        }
+    }
+    w.write_all(b"\"")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -365,6 +487,12 @@ mod tests {
             BigKey::K7, BigKey::K8, BigKey::K9, BigKey::K10, BigKey::K11, BigKey::K12,
             BigKey::K13, BigKey::K14, BigKey::K15, BigKey::K16, BigKey::K17, BigKey::K18,
             BigKey::K19, BigKey::K20, BigKey::K21, BigKey::K22,
+        ];
+        const KEY_STRS: &'static [&'static str] = &[
+            "duration", "total_ms", "event", "timestamp", "id",
+            "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10",
+            "k11", "k12", "k13", "k14", "k15", "k16", "k17", "k18",
+            "k19", "k20", "k21", "k22",
         ];
         fn as_index(self) -> usize {
             self as usize

@@ -416,7 +416,7 @@ impl GenContext {
         let enum_strs: Vec<String> = self.keys.iter().map(|k| k.json_name.clone()).collect();
         let max_keys = self.keys.len();
 
-        let as_str_arms: Vec<TokenStream2> = enum_variants
+        let _as_str_arms: Vec<TokenStream2> = enum_variants
             .iter()
             .zip(enum_strs.iter())
             .map(|(v, s)| quote! { EventKey::#v => #s })
@@ -507,15 +507,16 @@ impl GenContext {
             .map(|v| quote! { EventKey::#v })
             .collect();
 
+        let key_strs: Vec<&str> = self.keys.iter().map(|k| k.json_name.as_str()).collect();
+
         let key_impl = quote! {
             impl ::wide_log::Key for EventKey {
                 fn as_str(self) -> &'static str {
-                    match self {
-                        #(#as_str_arms,)*
-                    }
+                    <Self as ::wide_log::Key>::KEY_STRS[self as usize]
                 }
                 const MAX_KEYS: usize = #max_keys;
                 const KEYS: &'static [Self] = &[#(#all_key_idents),*];
+                const KEY_STRS: &'static [&'static str] = &[#(#key_strs),*];
                 fn as_index(self) -> usize { self as usize }
                 const DURATION_PATH: &'static [Self] = &[#(#duration_path_idents),*];
                 const TIMESTAMP_PATH: &'static [Self] = &[#(#timestamp_path_idents),*];
@@ -542,7 +543,7 @@ impl GenContext {
 
         let default_emit = quote! {
             fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
-                if let Ok(json) = ev.to_json() {
+                if let Ok(json) = ev.to_json_direct() {
                     ::tracing::info!(target: "wide_log", event = %json);
                 }
             }
@@ -852,7 +853,9 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("info", &format!($fmt, $($arg)*));
+                        let mut buf = ::std::string::String::with_capacity(64);
+                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
+                        ev.append_log_entry("info", &buf);
                     }
                 };
             }
@@ -866,7 +869,9 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("warn", &format!($fmt, $($arg)*));
+                        let mut buf = ::std::string::String::with_capacity(64);
+                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
+                        ev.append_log_entry("warn", &buf);
                     }
                 };
             }
@@ -880,7 +885,9 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("error", &format!($fmt, $($arg)*));
+                        let mut buf = ::std::string::String::with_capacity(64);
+                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
+                        ev.append_log_entry("error", &buf);
                     }
                 };
             }
@@ -894,7 +901,9 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("debug", &format!($fmt, $($arg)*));
+                        let mut buf = ::std::string::String::with_capacity(64);
+                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
+                        ev.append_log_entry("debug", &buf);
                     }
                 };
             }
@@ -908,7 +917,9 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        ev.append_log_entry("trace", &format!($fmt, $($arg)*));
+                        let mut buf = ::std::string::String::with_capacity(64);
+                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
+                        ev.append_log_entry("trace", &buf);
                     }
                 };
             }
