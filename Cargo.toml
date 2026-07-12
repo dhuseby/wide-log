@@ -15,7 +15,7 @@ smallvec = { version = "1", features = ["union", "write", "serde"] }
 sonic-rs = "0"
 thiserror = "2"
 tracing = "0"
-wide-log-macros = { path = "wide-log-macros" }
+wide-log-macros = { version = "0", path = "wide-log-macros" }
 
 # optional
 tokio = { version = "1", features = ["rt"], optional = true }
