@@ -17,24 +17,20 @@ impl<K: Key, F> WideEventGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
-    pub fn new(subsystem: &'static str, emit_fn: F) -> Self {
-        let mut event = WideEvent::new();
-        event.add(K::SUBSYSTEM_KEY, subsystem);
+    pub fn new(emit_fn: F) -> Self {
         Self {
-            event,
+            event: WideEvent::new(),
             start: Instant::now(),
             emit_fn: Some(emit_fn),
         }
     }
 
-    pub fn new_with_warnings<G>(subsystem: &'static str, emit_fn: F, on_type_conflict: G) -> Self
+    pub fn new_with_warnings<G>(emit_fn: F, on_type_conflict: G) -> Self
     where
         G: Fn(&mut WideEvent<K>, K) + Send + Sync + 'static,
     {
-        let mut event = WideEvent::new_with_warnings(on_type_conflict);
-        event.add(K::SUBSYSTEM_KEY, subsystem);
         Self {
-            event,
+            event: WideEvent::new_with_warnings(on_type_conflict),
             start: Instant::now(),
             emit_fn: Some(emit_fn),
         }
@@ -68,8 +64,8 @@ where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
     fn drop(&mut self) {
-        let duration_ns = self.start.elapsed().as_nanos() as u64;
-        self.event.add(K::DURATION_NS_KEY, duration_ns);
+        let duration_ms = self.start.elapsed().as_millis() as u64;
+        self.event.add_path(K::DURATION_PATH, duration_ms);
         if let Some(emit) = self.emit_fn.take() {
             emit(&self.event);
         }
@@ -95,25 +91,18 @@ mod tests {
     }
 
     #[test]
-    fn guard_sets_subsystem() {
+    fn guard_sets_duration_path() {
         let (slot, emit) = capture_json();
-        drop(WideEventGuard::<TestKey, _>::new("myservice", emit));
+        drop(WideEventGuard::<TestKey, _>::new(emit));
         let json = slot.lock().unwrap().clone().unwrap();
-        assert!(json.contains(r#""subsystem":"myservice""#));
-    }
-
-    #[test]
-    fn guard_sets_duration_ns() {
-        let (slot, emit) = capture_json();
-        drop(WideEventGuard::<TestKey, _>::new("svc", emit));
-        let json = slot.lock().unwrap().clone().unwrap();
-        assert!(json.contains("\"duration_ns\""));
+        assert!(json.contains("\"duration\""));
+        assert!(json.contains("\"total_ms\""));
     }
 
     #[test]
     fn guard_deref_add() {
         let (slot, emit) = capture_json();
-        let mut g = WideEventGuard::<TestKey, _>::new("svc", emit);
+        let mut g = WideEventGuard::<TestKey, _>::new(emit);
         g.add(TestKey::Status, "ok");
         drop(g);
         let json = slot.lock().unwrap().clone().unwrap();
@@ -127,7 +116,7 @@ mod tests {
         let emit = move |_: &WideEvent<TestKey>| {
             *c.lock().unwrap() += 1;
         };
-        drop(WideEventGuard::<TestKey, _>::new("svc", emit));
+        drop(WideEventGuard::<TestKey, _>::new(emit));
         assert_eq!(*counter.lock().unwrap(), 1);
     }
 
@@ -137,7 +126,6 @@ mod tests {
         let c = counter.clone();
         let (slot, emit) = capture_json();
         let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            "svc",
             emit,
             move |_event, _key| { *c.lock().unwrap() += 1; },
         );
@@ -152,7 +140,6 @@ mod tests {
     fn guard_new_with_warnings_callback_can_mutate_event() {
         let (slot, emit) = capture_json();
         let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            "svc",
             emit,
             |event, _key| { event.add(TestKey::Flag, true); },
         );
@@ -170,7 +157,6 @@ mod tests {
 
         let (slot, emit) = capture_json();
         let mut g = WideEventGuard::<TestKey, _>::new_with_warnings(
-            "svc",
             emit,
             |event, key| {
                 let warning = format!("{} type conflict", key.as_str());
@@ -199,8 +185,21 @@ mod tests {
         let emit = move |_: &WideEvent<TestKey>| {
             *c.lock().unwrap() += 1;
         };
-        let g = WideEventGuard::<TestKey, _>::new("svc", emit);
+        let g = WideEventGuard::<TestKey, _>::new(emit);
         std::mem::forget(g);
         assert_eq!(*counter.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn guard_duration_is_milliseconds() {
+        let (slot, emit) = capture_json();
+        let g = WideEventGuard::<TestKey, _>::new(emit);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        drop(g);
+        let json = slot.lock().unwrap().clone().unwrap();
+        let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+        use sonic_rs::JsonValueTrait;
+        let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
+        assert!(total_ms >= 1, "duration.total_ms should be >= 1, got {total_ms}");
     }
 }

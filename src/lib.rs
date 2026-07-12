@@ -2,7 +2,7 @@ pub mod context;
 pub mod error;
 pub mod guard;
 pub mod key;
-pub mod log;
+pub(crate) mod log;
 pub mod value;
 pub mod wide_event;
 
