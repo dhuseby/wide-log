@@ -5,7 +5,7 @@ authors = ["David Grantham"]
 edition = "2024"
 description = "Macros for a fast wide event logging crate a la loggingsucks.com"
 license = "Apache-2.0"
-readme = "README.md"
+readme = "../README.md"
 repository = "https://github.com/dhuseby/wide-log"
 
 [lib]
