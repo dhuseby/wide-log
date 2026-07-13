@@ -15,11 +15,33 @@ everything from a JSON object literal.
 
 - **Enum keys** — each JSON key becomes a `#[repr(u8)]` enum variant; a key is
   a single byte on the stack, not a heap-allocated string.
-- **SmallVec storage** — up to 24 entries and 8 log entries are inline on the
-  stack; zero heap allocation in the common case.
-- **FastStr SSO** — short strings (< ~23 bytes) use small-string optimization;
-  zero heap allocation for short values and log messages.
-- **sonic-rs SIMD** — serialization is SIMD-accelerated for fast JSON output.
+- **O(1) indexed storage** — values are stored in a `SmallVec<[Option<Value>; 32]>`
+  indexed by `key.as_index()`. No linear scan for `add`, `inc`, `dec`, or `add_n`.
+  The SmallVec is lazily initialized — grows on demand, never zeroed upfront.
+- **Tag + union Value** — `Value<K>` is a `#[repr(C)]` struct with a 1-byte tag
+  and a 32-byte union, totaling 40 bytes (down from 80 bytes in the original enum
+  design). Drop-able types use `ManuallyDrop` with manual cleanup via `Drop`.
+- **StaticStr variant** — `&'static str` literals are stored zero-copy as
+  `Value::StaticStr` (pointer + length, no allocation). The `info!("literal")`
+  macro path uses `LogMsg::Static` for zero-copy log messages.
+- **Direct serializer** — the `serialize_to<W: io::Write>` method writes JSON
+  directly, bypassing `serde` entirely. Uses `itoa` for integer formatting and
+  `ryu` for float formatting (zero-allocation number-to-ASCII).
+- **KEY_STRS lookup table** — `Key::as_str()` uses a `&'static [&'static str]`
+  array indexed by `as_index()`, replacing a multi-arm `match` with a branchless
+  array index.
+- **Thread-local reusable emit buffer** — the `default_emit` function writes
+  into a thread-local `Vec<u8>` that is cleared (not freed) on each emit. The
+  buffer grows once to the high-water mark and reuses that allocation for all
+  subsequent emits.
+- **`#[inline(always)]` on `current()`** — the TLS pointer lookup is fully
+  inlined at every `wl_set!`/`info!` call site. Uses `ContextCell::get_ptr()`
+  which returns a raw pointer (no `Option` wrapping inside the closure).
+- **Lazy SmallVec init** — `WideEvent::new()` starts with an empty `SmallVec`
+  (zero allocation, zero zeroing). The `ensure_capacity` method grows the SmallVec
+  only when a key at a given index is first accessed.
+- **fn pointer for type-conflict callback** — `on_type_conflict` is an
+  `Option<fn(&mut WideEvent, K)>` (8 bytes, `Copy`, no Arc, no clone).
 - **Zero shared state** — the hot path uses thread-local/task-local pointers,
   no `Mutex`, no `Arc`, no atomics.
 

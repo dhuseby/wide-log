@@ -48,6 +48,7 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Creates a new empty wide event with a type-conflict callback.
+    #[inline]
     pub fn new_with_warnings(f: ConflictFn<K>) -> Self {
         Self {
             values: SmallVec::new(),
@@ -102,6 +103,7 @@ impl<K: Key> WideEvent<K> {
         }
     }
 
+    #[inline]
     pub(crate) fn new_child(&self) -> WideEvent<K> {
         WideEvent {
             values: SmallVec::new(),
@@ -275,6 +277,7 @@ impl<K: Key> WideEvent<K> {
     }
 
     /// Count of present entries (alias for `len()`).
+    #[inline]
     pub(crate) fn count_present(&self) -> usize {
         self.values.iter().filter(|v| v.is_some()).count()
     }
@@ -318,6 +321,7 @@ impl<K: Key> std::fmt::Debug for WideEvent<K> {
 
 // ── Direct serializer (bypasses serde) ──
 
+#[inline]
 fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::io::Result<()> {
     w.write_all(b"{")?;
     let mut first = true;
@@ -357,6 +361,7 @@ fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::
     Ok(())
 }
 
+#[inline]
 fn write_value<K: Key, W: std::io::Write>(val: &crate::value::Value<K>, w: &mut W) -> std::io::Result<()> {
     use crate::value::ValueTag;
     match val.tag() {
@@ -405,7 +410,7 @@ fn write_value<K: Key, W: std::io::Write>(val: &crate::value::Value<K>, w: &mut 
     }
 }
 
-/// Write a JSON-escaped string.
+#[inline]
 fn write_json_str<W: std::io::Write>(w: &mut W, s: &str) -> std::io::Result<()> {
     w.write_all(b"\"")?;
     for c in s.bytes() {
