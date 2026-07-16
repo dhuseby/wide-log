@@ -52,6 +52,18 @@ pub trait Key: Copy + Eq + 'static {
     /// Path to the id field (e.g. `[Event, Id]`).
     /// Auto-set by the builder on `build()`. The value is a string.
     const ID_PATH: &'static [Self];
+
+    /// JSON key for the log entries array.
+    /// Override path: `Log`. Default: "log".
+    const LOG_KEY: &'static str;
+
+    /// JSON key for the level field within each log entry.
+    /// Override path: `Log.Level`. Default: "level".
+    const LEVEL_KEY: &'static str;
+
+    /// JSON key for the message field within each log entry.
+    /// Override path: `Log.Message`. Default: "message".
+    const MESSAGE_KEY: &'static str;
 }
 
 #[cfg(test)]
@@ -140,6 +152,9 @@ pub(crate) mod test_support {
         const DURATION_PATH: &'static [Self] = &[TestKey::Duration, TestKey::TotalMs];
         const TIMESTAMP_PATH: &'static [Self] = &[TestKey::Event, TestKey::Timestamp];
         const ID_PATH: &'static [Self] = &[TestKey::Event, TestKey::Id];
+        const LOG_KEY: &'static str = "log";
+        const LEVEL_KEY: &'static str = "level";
+        const MESSAGE_KEY: &'static str = "message";
     }
 }
 

@@ -31,7 +31,7 @@ pub struct WideEvent<K: Key> {
     /// key, or `None` if not yet set.
     pub(crate) values: SmallVec<[Option<Value<K>>; INLINE_CAP]>,
     /// Log entries accumulated by `info!`, `warn!`, etc. (up to 16 inline).
-    pub(crate) log_entries: SmallVec<[LogEntry; LOG_INLINE_CAP]>,
+    pub(crate) log_entries: SmallVec<[LogEntry<K>; LOG_INLINE_CAP]>,
     /// Optional callback fired when a key's value type conflicts.
     pub(crate) on_type_conflict: Option<ConflictFn<K>>,
 }
@@ -224,19 +224,19 @@ impl<K: Key> WideEvent<K> {
 
     #[inline]
     pub fn append_log_entry(&mut self, level: &'static str, message: &str) {
-        self.log_entries.push(LogEntry {
+        self.log_entries.push(LogEntry::new(
             level,
-            message: crate::log::LogMsg::Owned(faststr::FastStr::new(message)),
-        });
+            crate::log::LogMsg::Owned(faststr::FastStr::new(message)),
+        ));
     }
 
     /// Append a log entry with a `&'static str` message — zero-copy.
     #[inline]
     pub fn append_log_entry_static(&mut self, level: &'static str, message: &'static str) {
-        self.log_entries.push(LogEntry {
+        self.log_entries.push(LogEntry::new(
             level,
-            message: crate::log::LogMsg::Static(message),
-        });
+            crate::log::LogMsg::Static(message),
+        ));
     }
 
     #[inline]
@@ -303,7 +303,7 @@ impl<K: Key> serde::Serialize for WideEvent<K> {
             }
         }
         if !self.log_entries.is_empty() {
-            map.serialize_entry("log", &self.log_entries)?;
+            map.serialize_entry(K::LOG_KEY, &self.log_entries)?;
         }
         map.end()
     }
@@ -342,16 +342,20 @@ fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::
         if !first {
             w.write_all(b",")?;
         }
-        w.write_all(b"\"log\":")?;
+        write_json_str(w, K::LOG_KEY)?;
+        w.write_all(b":")?;
         w.write_all(b"[")?;
         for (j, entry) in ev.log_entries.iter().enumerate() {
             if j > 0 {
                 w.write_all(b",")?;
             }
             w.write_all(b"{")?;
-            w.write_all(b"\"level\":")?;
+            write_json_str(w, K::LEVEL_KEY)?;
+            w.write_all(b":")?;
             write_json_str(w, entry.level)?;
-            w.write_all(b",\"message\":")?;
+            w.write_all(b",")?;
+            write_json_str(w, K::MESSAGE_KEY)?;
+            w.write_all(b":")?;
             write_json_str(w, entry.message.as_str())?;
             w.write_all(b"}")?;
         }
@@ -521,6 +525,9 @@ mod tests {
         const DURATION_PATH: &'static [Self] = &[BigKey::Duration, BigKey::TotalMs];
         const TIMESTAMP_PATH: &'static [Self] = &[BigKey::Event, BigKey::Timestamp];
         const ID_PATH: &'static [Self] = &[BigKey::Event, BigKey::Id];
+        const LOG_KEY: &'static str = "log";
+        const LEVEL_KEY: &'static str = "level";
+        const MESSAGE_KEY: &'static str = "message";
     }
 
     // ── Basic tests ──

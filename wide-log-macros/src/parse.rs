@@ -24,6 +24,314 @@ pub enum Marker {
     Counter,
 }
 
+// ── Key override types ──
+
+/// Override for the `Log` built-in key and its sub-keys.
+#[derive(Debug, Clone, Default)]
+pub struct LogOverride {
+    /// The top-level "log" key itself. Override path: `Log`
+    pub key: Option<String>,
+    /// The "level" field within log entries. Override path: `Log.Level`
+    pub level: Option<String>,
+    /// The "message" field within log entries. Override path: `Log.Message`
+    pub message: Option<String>,
+}
+
+/// Override for the `Event` built-in key and its sub-keys.
+#[derive(Debug, Clone, Default)]
+pub struct EventOverride {
+    /// The top-level "event" key itself. Override path: `Event`
+    pub key: Option<String>,
+    /// The "id" field within the event object. Override path: `Event.Id`
+    pub id: Option<String>,
+    /// The "timestamp" field within the event object. Override path: `Event.Timestamp`
+    pub timestamp: Option<String>,
+}
+
+/// Override for the `Duration` built-in key and its sub-keys.
+#[derive(Debug, Clone, Default)]
+pub struct DurationOverride {
+    /// The top-level "duration" key itself. Override path: `Duration`
+    pub key: Option<String>,
+    /// The "total_ms" field within the duration object. Override path: `Duration.TotalMs`
+    pub total_ms: Option<String>,
+}
+
+/// All user-specified key overrides. Fields are `None` when the user
+/// does not override that key (default string will be used).
+#[derive(Debug, Clone, Default)]
+pub struct KeyOverrides {
+    pub log: LogOverride,
+    pub event: EventOverride,
+    pub duration: DurationOverride,
+}
+
+/// Parses the full `wide_log!` input: an optional bracketed override list
+/// followed by a JSON object. Returns the parsed overrides (or defaults)
+/// and the JSON object node.
+pub fn parse_wide_log_input(input: &TokenStream2) -> Result<(KeyOverrides, JsonNode), String> {
+    let mut iter = input.clone().into_iter().peekable();
+
+    // Peek: if the first token is a bracket group, parse overrides first.
+    let overrides = if matches!(
+        iter.peek(),
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Bracket
+    ) {
+        let ovr = parse_overrides(&mut iter)?;
+        // Expect a comma separating the override list from the JSON object.
+        match iter.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == ',' => {}
+            other => {
+                return Err(format!(
+                    "expected ',' after override list, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        }
+        ovr
+    } else {
+        KeyOverrides::default()
+    };
+
+    let node = parse_value(&mut iter)?;
+    if iter.peek().is_some() {
+        return Err("unexpected trailing tokens after JSON value".into());
+    }
+    match node {
+        JsonNode::Object(_) => Ok((overrides, node)),
+        _ => Err("wide_log! expects a JSON object literal: { ... }".into()),
+    }
+}
+
+/// Parses the bracketed override list: `[ Path => "str", ... ]`
+fn parse_overrides(
+    iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
+) -> Result<KeyOverrides, String> {
+    let Some(TokenTree::Group(g)) = iter.next() else {
+        return Err("expected override list in brackets".into());
+    };
+    if g.delimiter() != Delimiter::Bracket {
+        return Err("override list must be in brackets [...]".into());
+    }
+
+    let mut ovr = KeyOverrides::default();
+    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
+    let mut inner = g.stream().into_iter().peekable();
+
+    if inner.peek().is_none() {
+        return Err("override list is empty".into());
+    }
+
+    loop {
+        // Parse dotted path: Ident (. Ident)?
+        let path = parse_override_path(&mut inner)?;
+
+        // Expect =>
+        match inner.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == '=' => {}
+            other => {
+                return Err(format!(
+                    "expected '=>' after override path, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        }
+        match inner.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == '>' => {}
+            other => {
+                return Err(format!(
+                    "expected '=>' after override path, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        }
+
+        // Parse string literal
+        let value = match inner.next() {
+            Some(TokenTree::Literal(lit)) => {
+                let s = lit.to_string();
+                if s.starts_with('"') {
+                    unescape_json_string(&s)?
+                } else {
+                    return Err(format!(
+                        "override value must be a string literal, got: {s}"
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "override value must be a string literal, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        };
+
+        // Check for duplicate
+        let path_str = path.join(".");
+        if seen.contains_key(&path_str) {
+            return Err(format!("duplicate override path: {path_str}"));
+        }
+        seen.insert(path_str.clone(), ());
+
+        // Assign to the correct field
+        assign_override(&mut ovr, &path, &value)?;
+
+        // Expect , or end
+        match inner.next() {
+            None => break,
+            Some(TokenTree::Punct(p)) if p.as_char() == ',' => {
+                if inner.peek().is_none() {
+                    break;
+                }
+            }
+            other => {
+                return Err(format!(
+                    "expected ',' or end of override list, got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        }
+    }
+
+    Ok(ovr)
+}
+
+/// Parses a dotted override path: `Ident` or `Ident.Ident`
+fn parse_override_path(
+    iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
+) -> Result<Vec<String>, String> {
+    let first = match iter.next() {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        other => {
+            return Err(format!(
+                "expected override path identifier, got: {}",
+                other
+                    .map(|t| t.to_string())
+                    .unwrap_or("end of input".into())
+            ));
+        }
+    };
+
+    // Check for `.Ident` sub-key
+    if let Some(TokenTree::Punct(p)) = iter.peek() {
+        if p.as_char() == '.' {
+            iter.next(); // consume '.'
+            let second = match iter.next() {
+                Some(TokenTree::Ident(id)) => id.to_string(),
+                other => {
+                    return Err(format!(
+                        "expected sub-key identifier after '.', got: {}",
+                        other
+                            .map(|t| t.to_string())
+                            .unwrap_or("end of input".into())
+                    ));
+                }
+            };
+            return Ok(vec![first, second]);
+        }
+    }
+
+    Ok(vec![first])
+}
+
+/// Assigns an override value to the correct field in `KeyOverrides`,
+/// validating that the dotted path is a known built-in key path.
+fn assign_override(
+    ovr: &mut KeyOverrides,
+    path: &[String],
+    value: &str,
+) -> Result<(), String> {
+    match path.len() {
+        1 => match path[0].as_str() {
+            "Log" => {
+                if ovr.log.key.is_some() {
+                    return Err("duplicate override for Log".into());
+                }
+                ovr.log.key = Some(value.to_string());
+            }
+            "Event" => {
+                if ovr.event.key.is_some() {
+                    return Err("duplicate override for Event".into());
+                }
+                ovr.event.key = Some(value.to_string());
+            }
+            "Duration" => {
+                if ovr.duration.key.is_some() {
+                    return Err("duplicate override for Duration".into());
+                }
+                ovr.duration.key = Some(value.to_string());
+            }
+            other => {
+                return Err(format!(
+                    "unknown override top-level key: '{other}' \
+                     (expected Log, Event, or Duration)"
+                ));
+            }
+        },
+        2 => {
+            let parent = &path[0];
+            let sub = &path[1];
+            match (parent.as_str(), sub.as_str()) {
+                ("Log", "Level") => {
+                    if ovr.log.level.is_some() {
+                        return Err("duplicate override for Log.Level".into());
+                    }
+                    ovr.log.level = Some(value.to_string());
+                }
+                ("Log", "Message") => {
+                    if ovr.log.message.is_some() {
+                        return Err("duplicate override for Log.Message".into());
+                    }
+                    ovr.log.message = Some(value.to_string());
+                }
+                ("Event", "Id") => {
+                    if ovr.event.id.is_some() {
+                        return Err("duplicate override for Event.Id".into());
+                    }
+                    ovr.event.id = Some(value.to_string());
+                }
+                ("Event", "Timestamp") => {
+                    if ovr.event.timestamp.is_some() {
+                        return Err("duplicate override for Event.Timestamp".into());
+                    }
+                    ovr.event.timestamp = Some(value.to_string());
+                }
+                ("Duration", "TotalMs") => {
+                    if ovr.duration.total_ms.is_some() {
+                        return Err("duplicate override for Duration.TotalMs".into());
+                    }
+                    ovr.duration.total_ms = Some(value.to_string());
+                }
+                (parent, sub) => {
+                    return Err(format!(
+                        "unknown override path: '{parent}.{sub}' \
+                         (valid paths: Log.Level, Log.Message, Event.Id, \
+                         Event.Timestamp, Duration.TotalMs)"
+                    ));
+                }
+            }
+        }
+        _ => {
+            return Err(format!(
+                "override path has too many segments: {} (max 2)",
+                path.join(".")
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub fn parse_json_object(input: &TokenStream2) -> Result<JsonNode, String> {
     let mut iter = input.clone().into_iter().peekable();
     let node = parse_value(&mut iter)?;
@@ -363,5 +671,111 @@ mod tests {
             }
             _ => panic!("expected object"),
         }
+    }
+
+    // ── Override parsing tests ──
+
+    fn parse_full(src: &str) -> (KeyOverrides, JsonNode) {
+        let ts: TokenStream2 = src.parse().unwrap();
+        parse_wide_log_input(&ts).unwrap()
+    }
+
+    fn parse_full_err(src: &str) -> String {
+        let ts: TokenStream2 = src.parse().unwrap();
+        parse_wide_log_input(&ts).unwrap_err()
+    }
+
+    #[test]
+    fn no_overrides_backwards_compat() {
+        let (ovr, _) = parse_full(r#"{ "status": null }"#);
+        assert!(ovr.log.key.is_none());
+        assert!(ovr.log.level.is_none());
+        assert!(ovr.log.message.is_none());
+        assert!(ovr.event.key.is_none());
+        assert!(ovr.event.id.is_none());
+        assert!(ovr.event.timestamp.is_none());
+        assert!(ovr.duration.key.is_none());
+        assert!(ovr.duration.total_ms.is_none());
+    }
+
+    #[test]
+    fn all_overrides() {
+        let (ovr, _) = parse_full(
+            r#"[
+                Log => "my_log",
+                Log.Level => "severity",
+                Log.Message => "msg",
+                Event => "an_event",
+                Event.Id => "correlation_id",
+                Event.Timestamp => "ts",
+                Duration => "the_duration",
+                Duration.TotalMs => "how_long"
+            ], { "service": null }"#,
+        );
+        assert_eq!(ovr.log.key.as_deref(), Some("my_log"));
+        assert_eq!(ovr.log.level.as_deref(), Some("severity"));
+        assert_eq!(ovr.log.message.as_deref(), Some("msg"));
+        assert_eq!(ovr.event.key.as_deref(), Some("an_event"));
+        assert_eq!(ovr.event.id.as_deref(), Some("correlation_id"));
+        assert_eq!(ovr.event.timestamp.as_deref(), Some("ts"));
+        assert_eq!(ovr.duration.key.as_deref(), Some("the_duration"));
+        assert_eq!(ovr.duration.total_ms.as_deref(), Some("how_long"));
+    }
+
+    #[test]
+    fn partial_overrides() {
+        let (ovr, _) = parse_full(
+            r#"[ Event.Id => "correlation_id" ], { "status": null }"#,
+        );
+        assert!(ovr.event.key.is_none());
+        assert_eq!(ovr.event.id.as_deref(), Some("correlation_id"));
+        assert!(ovr.event.timestamp.is_none());
+        assert!(ovr.log.key.is_none());
+        assert!(ovr.duration.key.is_none());
+    }
+
+    #[test]
+    fn top_level_only_override() {
+        let (ovr, _) = parse_full(
+            r#"[ Event => "an_event" ], { "status": null }"#,
+        );
+        assert_eq!(ovr.event.key.as_deref(), Some("an_event"));
+        assert!(ovr.event.id.is_none());
+        assert!(ovr.event.timestamp.is_none());
+    }
+
+    #[test]
+    fn err_unknown_top_level() {
+        let err = parse_full_err(r#"[ Foo => "bar" ], { "status": null }"#);
+        assert!(err.contains("unknown override top-level key"));
+        assert!(err.contains("Foo"));
+    }
+
+    #[test]
+    fn err_unknown_sub_key() {
+        let err = parse_full_err(r#"[ Log.Bogus => "x" ], { "status": null }"#);
+        assert!(err.contains("unknown override path"));
+        assert!(err.contains("Log.Bogus"));
+    }
+
+    #[test]
+    fn err_invalid_dotted_path_duration_id() {
+        let err = parse_full_err(r#"[ Duration.Id => "x" ], { "status": null }"#);
+        assert!(err.contains("unknown override path"));
+        assert!(err.contains("Duration.Id"));
+    }
+
+    #[test]
+    fn err_duplicate_override() {
+        let err = parse_full_err(
+            r#"[ Event => "a", Event => "b" ], { "status": null }"#,
+        );
+        assert!(err.contains("duplicate override"));
+    }
+
+    #[test]
+    fn err_missing_comma_after_overrides() {
+        let err = parse_full_err(r#"[ Event => "a" ] { "status": null }"#);
+        assert!(err.contains("expected ',' after override list"));
     }
 }
