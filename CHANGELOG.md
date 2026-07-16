@@ -33,7 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via crate-root re-exports.
 - Test-only methods moved to `#[cfg(test)]` impl blocks.
 - `wide-log-macros` version pinned to match `wide-log` (`0.4.0`).
-- Bumped `ulid` dependency from `2` to `3`.
+- Bumped `ulid` dependency from `2` to `3`. Updated generated code from
+  `Ulid::r#gen()` to `Ulid::generate()` for the new API.
+- Changed `with_uuid` feature gating from `#[cfg(feature = "uuid")]` in
+  generated code (which checked the downstream crate's features) to a
+  proc-macro-level `cfg!` check, matching how `tokio` is handled. The
+  `uuid` feature in `Cargo.toml` now enables `wide-log-macros/uuid`.
 
 ### Fixed
 - Memory leak in `Value::drop`: `std::ptr::drop_in_place` on `ManuallyDrop`
@@ -49,6 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could satisfy the requirement. Pinned to `0.4`.
 - `tracing` and `uuid` re-exports added to `__re_exports_core` and new
   `__re_exports_uuid` module respectively.
+- `with_uuid` method generated unconditionally (not behind `#[cfg(feature)]`)
+  when the `uuid` feature is enabled on `wide-log`, so downstream crates
+  don't need `uuid` as a direct dependency.
 
 ## [0.3.0] - 2026-07-12
 

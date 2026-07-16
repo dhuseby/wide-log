@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4"], optional = true }
 [features]
 default = []
 tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
-uuid = ["dep:uuid"]
+uuid = ["dep:uuid", "wide-log-macros/uuid"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0", features = ["env-filter"] }

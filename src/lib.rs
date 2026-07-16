@@ -183,5 +183,11 @@ pub mod __re_exports {
 pub mod __re_exports_core {
     pub use chrono;
     pub use chrono_tz;
+    pub use tracing;
     pub use ulid;
+}
+
+#[cfg(feature = "uuid")]
+pub mod __re_exports_uuid {
+    pub use uuid;
 }

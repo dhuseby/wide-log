@@ -15,7 +15,8 @@ pub fn wide_log(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     };
     let tokio = cfg!(feature = "tokio");
-    match codegen::generate(node, overrides, tokio) {
+    let uuid = cfg!(feature = "uuid");
+    match codegen::generate(node, overrides, tokio, uuid) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }

@@ -7,6 +7,7 @@ pub fn generate(
     root: JsonNode,
     overrides: KeyOverrides,
     tokio: bool,
+    uuid: bool,
 ) -> Result<TokenStream2, syn::Error> {
     let mut ctx = GenContext::new(overrides);
     ctx.walk(&root, &[])?;
@@ -16,7 +17,7 @@ pub fn generate(
 
     ctx.validate()?;
 
-    Ok(ctx.emit(tokio))
+    Ok(ctx.emit(tokio, uuid))
 }
 
 #[derive(Clone, Debug)]
@@ -434,7 +435,7 @@ impl GenContext {
         Ok(())
     }
 
-    fn emit(&self, tokio: bool) -> TokenStream2 {
+    fn emit(&self, tokio: bool, uuid: bool) -> TokenStream2 {
         let enum_variants: Vec<syn::Ident> = self
             .keys
             .iter()
@@ -586,7 +587,7 @@ impl GenContext {
                     if ev.serialize_to(&mut *buf).is_ok() {
                         // Safety: our serializer only writes valid UTF-8.
                         let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
-                        ::tracing::info!(target: "wide_log", event = %json);
+                        ::wide_log::__re_exports_core::tracing::info!(target: "wide_log", event = %json);
                     }
                 });
             }
@@ -681,15 +682,18 @@ impl GenContext {
             }
         };
 
-        let builder_uuid = quote! {
-            #[cfg(feature = "uuid")]
-            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
-                WideLogGuardBuilder<F>
-            {
-                pub fn with_uuid(self) -> Self {
-                    self.with_id(|| ::uuid::Uuid::new_v4().to_string())
+        let builder_uuid = if uuid {
+            quote! {
+                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
+                    WideLogGuardBuilder<F>
+                {
+                    pub fn with_uuid(self) -> Self {
+                        self.with_id(|| ::wide_log::__re_exports_uuid::uuid::Uuid::new_v4().to_string())
+                    }
                 }
             }
+        } else {
+            TokenStream2::new()
         };
 
         let guard_builder_fn = quote! {
