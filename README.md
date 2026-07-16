@@ -18,12 +18,12 @@ everything from a JSON object literal.
 - **O(1) indexed storage** — values are stored in a `SmallVec<[Option<Value>; 32]>`
   indexed by `key.as_index()`. No linear scan for `add`, `inc`, `dec`, or `add_n`.
   The SmallVec is lazily initialized — grows on demand, never zeroed upfront.
-- **Tag + union Value** — `Value<K>` is a `#[repr(C)]` struct with a 1-byte tag
-  and a 32-byte union, totaling 40 bytes (down from 80 bytes in the original enum
-  design). Drop-able types use `ManuallyDrop` with manual cleanup via `Drop`.
+- **Plain enum Value** — `Value<K>` is a Rust enum with 9 variants. The
+  compiler handles destructors automatically — no `unsafe`, no `ManuallyDrop`,
+  no manual `Drop` impls.
 - **StaticStr variant** — `&'static str` literals are stored zero-copy as
-  `Value::StaticStr` (pointer + length, no allocation). The `info!("literal")`
-  macro path uses `LogMsg::Static` for zero-copy log messages.
+  `Value::StaticStr`. The `info!("literal")` macro path uses `LogMsg::Static`
+  for zero-copy log messages.
 - **Direct serializer** — the `serialize_to<W: io::Write>` method writes JSON
   directly, bypassing `serde` entirely. Uses `itoa` for integer formatting and
   `ryu` for float formatting (zero-allocation number-to-ASCII).
@@ -79,21 +79,60 @@ fn main() {
 }
 ```
 
+### Customizable Built-in Key Strings
+
+All 8 built-in key strings can be renamed using an optional bracketed override
+list before the JSON object. This is useful when your log aggregator expects
+different key names (e.g., `"correlation_id"` instead of `"id"`):
+
+```rust
+wide_log!([
+    Log             => "log",
+    Log.Level       => "severity",
+    Log.Message     => "msg",
+    Event           => "event",
+    Event.Id        => "correlation_id",
+    Event.Timestamp => "timestamp",
+    Duration        => "duration",
+    Duration.TotalMs => "total_ms"
+], {
+    "service": { "name": "example" },
+    "requests": counter!,
+});
+```
+
+The override paths use a dotted convention that mirrors the nesting structure.
+Omit the override list entirely to use all defaults (backwards compatible).
+
+#### Override Paths
+
+| Override Path | Default | Description |
+|---|---|---|
+| `Log` | `"log"` | Top-level key for the log entries array |
+| `Log.Level` | `"level"` | Level field within each log entry |
+| `Log.Message` | `"message"` | Message field within each log entry |
+| `Event` | `"event"` | Top-level key for event metadata |
+| `Event.Id` | `"id"` | ID field within the event object |
+| `Event.Timestamp` | `"timestamp"` | Timestamp field within the event object |
+| `Duration` | `"duration"` | Top-level key for duration |
+| `Duration.TotalMs` | `"total_ms"` | Milliseconds field within the duration object |
+
 ### Auto-Added Keys
 
 The macro automatically adds three keys that every wide event needs:
 
-1. **`"log"`** — the list of log entries accumulated by `info!()`, `warn!()`,
-   etc. Handled entirely internally; the user never declares `"log"` in the
-   JSON. It appears in the serialized output automatically.
+1. **`"log"`** (or your custom `Log` override) — the list of log entries
+   accumulated by `info!()`, `warn!()`, etc. Handled entirely internally; the
+   user never declares it in the JSON. It appears in the serialized output
+   automatically.
 
-2. **`"duration"`** — the duration of the wide event lifecycle. If the user
-   does not declare `"duration"` in the JSON, the macro automatically adds
-   `"duration": { "total_ms": duration! }`. The guard sets
+2. **`"duration"`** (or your custom `Duration` override) — the duration of the
+   wide event lifecycle. If the user does not declare it in the JSON, the macro
+   automatically adds `"duration": { "total_ms": duration! }`. The guard sets
    `duration.total_ms` to the elapsed milliseconds on drop.
 
-3. **`"event"`** — event metadata. If the user does not declare `"event"` in
-   the JSON, the macro automatically adds
+3. **`"event"`** (or your custom `Event` override) — event metadata. If the
+   user does not declare it in the JSON, the macro automatically adds
    `"event": { "timestamp": null, "id": null }`. The guard sets
    `event.timestamp` to the current time as an RFC 3339 string on drop. The
    builder sets `event.id` to a ULID string (or UUIDv4 with the `uuid` feature)
@@ -165,15 +204,10 @@ wide_log!({
 fn main() {
     tracing_subscriber::fmt().init();
 
-    // Create guard — builder().build() uses defaults (UTC, ULID, tracing emit).
-    // Sets default values from JSON (service.name = "example-service",
-    // service.version = "1.0.0") and starts the timer:
     let _guard = WideLogGuard::builder().build();
 
-    // Set per-request field values:
     wl_inc!("requests");
 
-    // Add log messages — these accumulate in the "log" array:
     info!("request received");
     warn!("upstream slow");
 
@@ -189,7 +223,7 @@ use wide_log::wide_log;
 
 wide_log!({
     "service": {
-        "name": "example-service",
+        "name": null,
         "version": "1.0.0",
     },
     "requests": counter!,
@@ -204,6 +238,7 @@ async fn main() {
 
 async fn handle_request() {
     scope_default(async {
+        wl_set!("service.name", "example-service");
         wl_inc!("requests");
         info!("request received");
 
@@ -211,7 +246,7 @@ async fn handle_request() {
 
         info!("request completed");
     }).await;
-    // guard drops here → duration.total_ms and event.timestamp set, event emitted
+    // guard drops here → duration.total_ms set, event emitted
 }
 
 async fn fetch_upstream() {
@@ -358,6 +393,26 @@ wide_log!({
     "requests": counter!,
 });
 // DURATION_PATH = &[Duration, WallMs] → sets duration.wall_ms on drop
+```
+
+### Custom Key Names
+
+```rust
+use wide_log::wide_log;
+
+wide_log!([
+    Event.Id => "correlation_id"
+], {
+    "service": { "name": "example" },
+    "requests": counter!,
+});
+
+fn main() {
+    let _guard = WideLogGuard::builder().build();
+
+    // The event ID is serialized as "correlation_id" instead of "id":
+    // {"event":{"timestamp":"...","correlation_id":"01J6XK5R..."}, ...}
+}
 ```
 
 ## Macro Reference

@@ -1,5 +1,5 @@
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use wide_log::wide_log;
 
 // Generate the wide-log schema once at module level. This produces:
@@ -30,6 +30,7 @@ fn noop_emit(_ev: &wide_log::WideEvent<EventKey>) {}
 /// Measures the full emit path including `to_json`.
 type CaptureSlot = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 
+#[allow(clippy::type_complexity)]
 fn capture_emit() -> (
     CaptureSlot,
     impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,
@@ -249,9 +250,9 @@ fn bench_to_json(c: &mut Criterion) {
     group.bench_function("small", |b| {
         b.iter_batched(
             || {
-                let mut ev = wide_log::WideEvent::<EventKey>::new();
-                ev.add(EventKey::Status, "ok");
-                ev.add(EventKey::Requests, 1u64);
+                let mut ev = wide_log::WideEvent::<EventKey>::default();
+                ev.add_path(&[EventKey::Status], "ok");
+                ev.add_path(&[EventKey::Requests], 1u64);
                 ev
             },
             |ev| {
@@ -266,14 +267,14 @@ fn bench_to_json(c: &mut Criterion) {
     group.bench_function("medium", |b| {
         b.iter_batched(
             || {
-                let mut ev = wide_log::WideEvent::<EventKey>::new();
+                let mut ev = wide_log::WideEvent::<EventKey>::default();
                 ev.add_path(&[EventKey::Service, EventKey::Name], "my-service");
                 ev.add_path(&[EventKey::Service, EventKey::Version], "1.0.0");
                 ev.add_path(&[EventKey::Http, EventKey::Method], "GET");
                 ev.add_path(&[EventKey::Http, EventKey::Path], "/api/users");
                 ev.add_path(&[EventKey::Http, EventKey::Status], 200u64);
-                ev.add(EventKey::Requests, 42u64);
-                ev.add(EventKey::Status, "ok");
+                ev.add_path(&[EventKey::Requests], 42u64);
+                ev.add_path(&[EventKey::Status], "ok");
                 ev.append_log_entry("info", "request received");
                 ev.append_log_entry("warn", "upstream slow");
                 ev.append_log_entry("info", "request completed");
@@ -291,16 +292,16 @@ fn bench_to_json(c: &mut Criterion) {
     group.bench_function("large", |b| {
         b.iter_batched(
             || {
-                let mut ev = wide_log::WideEvent::<EventKey>::new();
+                let mut ev = wide_log::WideEvent::<EventKey>::default();
                 ev.add_path(&[EventKey::Service, EventKey::Name], "my-service");
                 ev.add_path(&[EventKey::Service, EventKey::Version], "1.0.0");
                 ev.add_path(&[EventKey::Http, EventKey::Method], "GET");
                 ev.add_path(&[EventKey::Http, EventKey::Path], "/api/users/42/details");
                 ev.add_path(&[EventKey::Http, EventKey::Status], 200u64);
-                ev.add(EventKey::Requests, 1337u64);
-                ev.add(EventKey::Retries, 3u64);
-                ev.add(EventKey::Status, "ok");
-                ev.add(EventKey::Flag, true);
+                ev.add_path(&[EventKey::Requests], 1337u64);
+                ev.add_path(&[EventKey::Retries], 3u64);
+                ev.add_path(&[EventKey::Status], "ok");
+                ev.add_path(&[EventKey::Flag], true);
                 for i in 0..20 {
                     ev.append_log_entry("info", &format!("log entry number {i}"));
                 }

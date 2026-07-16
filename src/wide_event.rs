@@ -3,9 +3,9 @@ use smallvec::SmallVec;
 use crate::error::Error;
 use crate::key::Key;
 use crate::log::LogEntry;
-use crate::value::{Value, ValueTag};
+use crate::value::Value;
 
-pub type ConflictFn<K> = fn(&mut WideEvent<K>, K);
+pub(crate) type ConflictFn<K> = fn(&mut WideEvent<K>, K);
 
 const INLINE_CAP: usize = 32;
 const LOG_INLINE_CAP: usize = 16;
@@ -31,7 +31,7 @@ pub struct WideEvent<K: Key> {
     /// key, or `None` if not yet set.
     pub(crate) values: SmallVec<[Option<Value<K>>; INLINE_CAP]>,
     /// Log entries accumulated by `info!`, `warn!`, etc. (up to 16 inline).
-    pub(crate) log_entries: SmallVec<[LogEntry; LOG_INLINE_CAP]>,
+    pub(crate) log_entries: SmallVec<[LogEntry<K>; LOG_INLINE_CAP]>,
     /// Optional callback fired when a key's value type conflicts.
     pub(crate) on_type_conflict: Option<ConflictFn<K>>,
 }
@@ -39,21 +39,11 @@ pub struct WideEvent<K: Key> {
 impl<K: Key> WideEvent<K> {
     /// Creates a new empty wide event with no conflict callback.
     #[inline]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: None,
-        }
-    }
-
-    /// Creates a new empty wide event with a type-conflict callback.
-    #[inline]
-    pub fn new_with_warnings(f: ConflictFn<K>) -> Self {
-        Self {
-            values: SmallVec::new(),
-            log_entries: SmallVec::new(),
-            on_type_conflict: Some(f),
         }
     }
 
@@ -67,7 +57,7 @@ impl<K: Key> WideEvent<K> {
 
     /// Sets or replaces a field value at the given key. O(1) indexed access.
     #[inline]
-    pub fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
+    pub(crate) fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
         self.values[idx] = Some(value.into());
@@ -75,7 +65,7 @@ impl<K: Key> WideEvent<K> {
 
     /// Gets or creates a nested object at the given key, returning `&mut` to it.
     #[inline]
-    pub fn object(&mut self, key: K) -> &mut WideEvent<K> {
+    pub(crate) fn object(&mut self, key: K) -> &mut WideEvent<K> {
         let idx = key.as_index();
         self.ensure_capacity(idx);
         let needs_replace = match &self.values[idx] {
@@ -83,23 +73,16 @@ impl<K: Key> WideEvent<K> {
             Some(v) => !v.is_object(),
         };
         if needs_replace {
-            if let Some(cb) = self.on_type_conflict {
-                if self.values[idx].is_some() {
-                    cb(self, key);
-                }
+            if let Some(cb) = self.on_type_conflict
+                && self.values[idx].is_some()
+            {
+                cb(self, key);
             }
             self.values[idx] = Some(Value::from_object(self.new_child()));
         }
-        // Return &mut to the WideEvent inside the Object variant.
-        let slot = &mut self.values[idx];
-        match slot {
-            Some(v) => {
-                debug_assert!(v.tag() == ValueTag::Object);
-                // Safety: we just ensured the value is an Object.
-                let boxed: &mut std::mem::ManuallyDrop<Box<WideEvent<K>>> = unsafe { &mut v.data.object };
-                &mut **boxed
-            }
-            None => unreachable!(),
+        match &mut self.values[idx] {
+            Some(Value::Object(boxed)) => boxed,
+            _ => unreachable!(),
         }
     }
 
@@ -136,15 +119,13 @@ impl<K: Key> WideEvent<K> {
 
     /// Increment a numeric field by 1. Initializes to 1 if absent.
     #[inline]
-    pub fn inc(&mut self, key: K) {
+    pub(crate) fn inc(&mut self, key: K) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
-            Some(v) => match v.tag() {
-                ValueTag::U64 => Value::from(unsafe { v.data.u } + 1),
-                ValueTag::I64 => Value::from(unsafe { v.data.i } + 1),
-                _ => Value::from(1u64),
-            },
+            Some(Value::U64(n)) => Value::from(*n + 1),
+            Some(Value::I64(n)) => Value::from(*n + 1),
+            Some(_) => Value::from(1u64),
             None => Value::from(1u64),
         };
         self.values[idx] = Some(new_val);
@@ -152,18 +133,19 @@ impl<K: Key> WideEvent<K> {
 
     /// Decrement a numeric field by 1. Initializes to -1 if absent.
     #[inline]
-    pub fn dec(&mut self, key: K) {
+    pub(crate) fn dec(&mut self, key: K) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
-            Some(v) => match v.tag() {
-                ValueTag::U64 => {
-                    let n = unsafe { v.data.u };
-                    if n > 0 { Value::from(n - 1) } else { Value::from(0u64) }
+            Some(Value::U64(n)) => {
+                if *n > 0 {
+                    Value::from(*n - 1)
+                } else {
+                    Value::from(0u64)
                 }
-                ValueTag::I64 => Value::from(unsafe { v.data.i } - 1),
-                _ => Value::from(-1i64),
-            },
+            }
+            Some(Value::I64(n)) => Value::from(*n - 1),
+            Some(_) => Value::from(-1i64),
             None => Value::from(-1i64),
         };
         self.values[idx] = Some(new_val);
@@ -171,19 +153,25 @@ impl<K: Key> WideEvent<K> {
 
     /// Add a number to a numeric field. Initializes to `n` if absent.
     #[inline]
-    pub fn add_n(&mut self, key: K, n: i64) {
+    pub(crate) fn add_n(&mut self, key: K, n: i64) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
         let new_val = match &self.values[idx] {
-            Some(v) => match v.tag() {
-                ValueTag::U64 => Value::from(unsafe { v.data.u }.saturating_add_signed(n)),
-                ValueTag::I64 => Value::from(unsafe { v.data.i } + n),
-                _ => {
-                    if n >= 0 { Value::from(n as u64) } else { Value::from(n) }
+            Some(Value::U64(u)) => Value::from(u.saturating_add_signed(n)),
+            Some(Value::I64(i)) => Value::from(*i + n),
+            Some(_) => {
+                if n >= 0 {
+                    Value::from(n as u64)
+                } else {
+                    Value::from(n)
                 }
-            },
+            }
             None => {
-                if n >= 0 { Value::from(n as u64) } else { Value::from(n) }
+                if n >= 0 {
+                    Value::from(n as u64)
+                } else {
+                    Value::from(n)
+                }
             }
         };
         self.values[idx] = Some(new_val);
@@ -224,39 +212,22 @@ impl<K: Key> WideEvent<K> {
 
     #[inline]
     pub fn append_log_entry(&mut self, level: &'static str, message: &str) {
-        self.log_entries.push(LogEntry {
+        self.log_entries.push(LogEntry::new(
             level,
-            message: crate::log::LogMsg::Owned(faststr::FastStr::new(message)),
-        });
+            crate::log::LogMsg::Owned(faststr::FastStr::new(message)),
+        ));
     }
 
     /// Append a log entry with a `&'static str` message — zero-copy.
     #[inline]
     pub fn append_log_entry_static(&mut self, level: &'static str, message: &'static str) {
-        self.log_entries.push(LogEntry {
-            level,
-            message: crate::log::LogMsg::Static(message),
-        });
+        self.log_entries
+            .push(LogEntry::new(level, crate::log::LogMsg::Static(message)));
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.values.iter().all(|v| v.is_none())
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.values.iter().filter(|v| v.is_some()).count()
-    }
-
-    #[inline]
-    pub fn log_len(&self) -> usize {
-        self.log_entries.len()
-    }
-
-    #[inline]
-    pub fn has_logs(&self) -> bool {
-        !self.log_entries.is_empty()
     }
 
     pub fn to_json(&self) -> Result<String, Error> {
@@ -269,17 +240,38 @@ impl<K: Key> WideEvent<K> {
         write_event(self, w).map_err(|e| Error::Serialize(e.to_string()))
     }
 
-    /// Serialize to a JSON string via the direct serializer (no serde).
-    pub fn to_json_direct(&self) -> Result<String, Error> {
-        let mut buf = Vec::with_capacity(256);
-        self.serialize_to(&mut buf).map_err(|e| Error::Serialize(e.to_string()))?;
-        Ok(String::from_utf8(buf).map_err(|e| Error::Serialize(e.to_string()))?)
-    }
-
     /// Count of present entries (alias for `len()`).
     #[inline]
     pub(crate) fn count_present(&self) -> usize {
         self.values.iter().filter(|v| v.is_some()).count()
+    }
+}
+
+#[cfg(test)]
+impl<K: Key> WideEvent<K> {
+    /// Creates a new empty wide event with a type-conflict callback.
+    #[inline]
+    pub(crate) fn new_with_warnings(f: ConflictFn<K>) -> Self {
+        Self {
+            values: SmallVec::new(),
+            log_entries: SmallVec::new(),
+            on_type_conflict: Some(f),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.values.iter().all(|v| v.is_none())
+    }
+
+    #[inline]
+    pub(crate) fn log_len(&self) -> usize {
+        self.log_entries.len()
+    }
+
+    #[inline]
+    pub(crate) fn has_logs(&self) -> bool {
+        !self.log_entries.is_empty()
     }
 }
 
@@ -296,14 +288,14 @@ impl<K: Key> serde::Serialize for WideEvent<K> {
         let total = present + if self.log_entries.is_empty() { 0 } else { 1 };
         let mut map = serializer.serialize_map(Some(total))?;
         for (i, key) in K::KEYS.iter().enumerate() {
-            if i < self.values.len() {
-                if let Some(value) = &self.values[i] {
-                    map.serialize_entry(key.as_str(), value)?;
-                }
+            if i < self.values.len()
+                && let Some(value) = &self.values[i]
+            {
+                map.serialize_entry(key.as_str(), value)?;
             }
         }
         if !self.log_entries.is_empty() {
-            map.serialize_entry("log", &self.log_entries)?;
+            map.serialize_entry(K::LOG_KEY, &self.log_entries)?;
         }
         map.end()
     }
@@ -326,32 +318,36 @@ fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::
     w.write_all(b"{")?;
     let mut first = true;
     for (i, key) in K::KEYS.iter().enumerate() {
-        if i < ev.values.len() {
-            if let Some(val) = &ev.values[i] {
-                if !first {
-                    w.write_all(b",")?;
-                }
-                first = false;
-                write_json_str(w, key.as_str())?;
-                w.write_all(b":")?;
-                write_value(val, w)?;
+        if i < ev.values.len()
+            && let Some(val) = &ev.values[i]
+        {
+            if !first {
+                w.write_all(b",")?;
             }
+            first = false;
+            write_json_str(w, key.as_str())?;
+            w.write_all(b":")?;
+            write_value(val, w)?;
         }
     }
     if !ev.log_entries.is_empty() {
         if !first {
             w.write_all(b",")?;
         }
-        w.write_all(b"\"log\":")?;
+        write_json_str(w, K::LOG_KEY)?;
+        w.write_all(b":")?;
         w.write_all(b"[")?;
         for (j, entry) in ev.log_entries.iter().enumerate() {
             if j > 0 {
                 w.write_all(b",")?;
             }
             w.write_all(b"{")?;
-            w.write_all(b"\"level\":")?;
+            write_json_str(w, K::LEVEL_KEY)?;
+            w.write_all(b":")?;
             write_json_str(w, entry.level)?;
-            w.write_all(b",\"message\":")?;
+            w.write_all(b",")?;
+            write_json_str(w, K::MESSAGE_KEY)?;
+            w.write_all(b":")?;
             write_json_str(w, entry.message.as_str())?;
             w.write_all(b"}")?;
         }
@@ -362,37 +358,34 @@ fn write_event<K: Key, W: std::io::Write>(ev: &WideEvent<K>, w: &mut W) -> std::
 }
 
 #[inline]
-fn write_value<K: Key, W: std::io::Write>(val: &crate::value::Value<K>, w: &mut W) -> std::io::Result<()> {
-    use crate::value::ValueTag;
-    match val.tag() {
-        ValueTag::Null => w.write_all(b"null"),
-        ValueTag::Bool => {
-            if unsafe { val.data.b } {
+fn write_value<K: Key, W: std::io::Write>(
+    val: &crate::value::Value<K>,
+    w: &mut W,
+) -> std::io::Result<()> {
+    match val {
+        Value::Null => w.write_all(b"null"),
+        Value::Bool(b) => {
+            if *b {
                 w.write_all(b"true")
             } else {
                 w.write_all(b"false")
             }
         }
-        ValueTag::I64 => {
+        Value::I64(i) => {
             let mut buf = itoa::Buffer::new();
-            w.write_all(buf.format(unsafe { val.data.i }).as_bytes())
+            w.write_all(buf.format(*i).as_bytes())
         }
-        ValueTag::U64 => {
+        Value::U64(u) => {
             let mut buf = itoa::Buffer::new();
-            w.write_all(buf.format(unsafe { val.data.u }).as_bytes())
+            w.write_all(buf.format(*u).as_bytes())
         }
-        ValueTag::F64 => {
+        Value::F64(f) => {
             let mut buf = ryu::Buffer::new();
-            w.write_all(buf.format(unsafe { val.data.f }).as_bytes())
+            w.write_all(buf.format(*f).as_bytes())
         }
-        ValueTag::Str => {
-            write_json_str(w, unsafe { &val.data.s }.as_str())
-        }
-        ValueTag::StaticStr => {
-            write_json_str(w, unsafe { val.data.static_str })
-        }
-        ValueTag::Array => {
-            let arr = unsafe { &*val.data.array };
+        Value::Str(s) => write_json_str(w, s.as_str()),
+        Value::StaticStr(s) => write_json_str(w, s),
+        Value::Array(arr) => {
             w.write_all(b"[")?;
             for (i, v) in arr.iter().enumerate() {
                 if i > 0 {
@@ -403,10 +396,7 @@ fn write_value<K: Key, W: std::io::Write>(val: &crate::value::Value<K>, w: &mut 
             w.write_all(b"]")?;
             Ok(())
         }
-        ValueTag::Object => {
-            let obj = unsafe { &*val.data.object };
-            write_event(obj, w)
-        }
+        Value::Object(obj) => write_event(obj, w),
     }
 }
 
@@ -503,17 +493,60 @@ mod tests {
         }
         const MAX_KEYS: usize = 25;
         const KEYS: &'static [Self] = &[
-            BigKey::Duration, BigKey::TotalMs, BigKey::Event, BigKey::Timestamp,
-            BigKey::Id, BigKey::K2, BigKey::K3, BigKey::K4, BigKey::K5, BigKey::K6,
-            BigKey::K7, BigKey::K8, BigKey::K9, BigKey::K10, BigKey::K11, BigKey::K12,
-            BigKey::K13, BigKey::K14, BigKey::K15, BigKey::K16, BigKey::K17, BigKey::K18,
-            BigKey::K19, BigKey::K20, BigKey::K21, BigKey::K22,
+            BigKey::Duration,
+            BigKey::TotalMs,
+            BigKey::Event,
+            BigKey::Timestamp,
+            BigKey::Id,
+            BigKey::K2,
+            BigKey::K3,
+            BigKey::K4,
+            BigKey::K5,
+            BigKey::K6,
+            BigKey::K7,
+            BigKey::K8,
+            BigKey::K9,
+            BigKey::K10,
+            BigKey::K11,
+            BigKey::K12,
+            BigKey::K13,
+            BigKey::K14,
+            BigKey::K15,
+            BigKey::K16,
+            BigKey::K17,
+            BigKey::K18,
+            BigKey::K19,
+            BigKey::K20,
+            BigKey::K21,
+            BigKey::K22,
         ];
         const KEY_STRS: &'static [&'static str] = &[
-            "duration", "total_ms", "event", "timestamp", "id",
-            "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10",
-            "k11", "k12", "k13", "k14", "k15", "k16", "k17", "k18",
-            "k19", "k20", "k21", "k22",
+            "duration",
+            "total_ms",
+            "event",
+            "timestamp",
+            "id",
+            "k2",
+            "k3",
+            "k4",
+            "k5",
+            "k6",
+            "k7",
+            "k8",
+            "k9",
+            "k10",
+            "k11",
+            "k12",
+            "k13",
+            "k14",
+            "k15",
+            "k16",
+            "k17",
+            "k18",
+            "k19",
+            "k20",
+            "k21",
+            "k22",
         ];
         fn as_index(self) -> usize {
             self as usize
@@ -521,6 +554,9 @@ mod tests {
         const DURATION_PATH: &'static [Self] = &[BigKey::Duration, BigKey::TotalMs];
         const TIMESTAMP_PATH: &'static [Self] = &[BigKey::Event, BigKey::Timestamp];
         const ID_PATH: &'static [Self] = &[BigKey::Event, BigKey::Id];
+        const LOG_KEY: &'static str = "log";
+        const LEVEL_KEY: &'static str = "level";
+        const MESSAGE_KEY: &'static str = "message";
     }
 
     // ── Basic tests ──

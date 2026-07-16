@@ -11,8 +11,11 @@ wide_log!({
 
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
+type CaptureSlot = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+
+#[allow(clippy::type_complexity)]
 fn capture() -> (
-    std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    CaptureSlot,
     impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,
 ) {
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -26,6 +29,16 @@ fn capture() -> (
 fn parse(slot: &std::sync::Arc<std::sync::Mutex<Option<String>>>) -> sonic_rs::Value {
     let json = slot.lock().unwrap().clone().unwrap();
     sonic_rs::from_str(&json).unwrap()
+}
+
+fn current_field_count() -> usize {
+    current()
+        .map(|e| {
+            let json = e.to_json().unwrap();
+            let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+            parsed.as_object().map(|o| o.len()).unwrap_or(0)
+        })
+        .unwrap_or(0)
 }
 
 #[test]
@@ -201,8 +214,14 @@ fn event_key_auto_added() {
     drop(_guard);
 
     let parsed = parse(&captured);
-    assert!(parsed["event"]["timestamp"].is_str(), "event.timestamp should be a string");
-    assert!(parsed["event"]["id"].is_str(), "event.id should be a string");
+    assert!(
+        parsed["event"]["timestamp"].is_str(),
+        "event.timestamp should be a string"
+    );
+    assert!(
+        parsed["event"]["id"].is_str(),
+        "event.id should be a string"
+    );
     let id = parsed["event"]["id"].as_str().unwrap();
     assert_eq!(id.len(), 26, "default ULID should be 26 chars, got: {id}");
 }
@@ -260,10 +279,7 @@ fn event_id_is_ulid_by_default() {
 #[test]
 fn event_id_is_uuid_with_uuid_feature() {
     let (captured, emit) = capture();
-    let _guard = WideLogGuard::builder()
-        .with_emit(emit)
-        .with_uuid()
-        .build();
+    let _guard = WideLogGuard::builder().with_emit(emit).with_uuid().build();
 
     drop(_guard);
 
@@ -271,7 +287,10 @@ fn event_id_is_uuid_with_uuid_feature() {
     let id = parsed["event"]["id"].as_str().unwrap();
     // UUIDv4 is 36 chars including hyphens
     assert_eq!(id.len(), 36, "UUIDv4 should be 36 chars, got: {id}");
-    assert!(id.chars().filter(|c| *c == '-').count() == 4, "UUID should have 4 hyphens: {id}");
+    assert!(
+        id.chars().filter(|c| *c == '-').count() == 4,
+        "UUID should have 4 hyphens: {id}"
+    );
 }
 
 #[test]
@@ -300,7 +319,7 @@ fn nested_sync_scopes_innermost_accessible() {
 
     wl_set!("status", "outer");
     // service.version default + status + event.id = 3
-    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 3);
+    assert_eq!(current_field_count(), 3);
 
     {
         let ic = inner_captured.clone();
@@ -313,13 +332,13 @@ fn nested_sync_scopes_innermost_accessible() {
         // Inner scope: current() returns the inner event, not the outer.
         wl_set!("status", "inner");
         // service.version default + status + event.id = 3
-        assert_eq!(current().map(|e| e.len()).unwrap_or(0), 3);
+        assert_eq!(current_field_count(), 3);
 
         info!("inner log");
     }
 
     // After inner drop: outer event is restored.
-    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 3);
+    assert_eq!(current_field_count(), 3);
 
     drop(_outer);
 
@@ -360,7 +379,7 @@ fn nested_sync_scopes_outer_restored_after_inner_drop() {
     }
 
     // service.version default + requests + event.id = 3
-    assert_eq!(current().map(|e| e.len()).unwrap_or(0), 3);
+    assert_eq!(current_field_count(), 3);
 
     drop(_outer);
 

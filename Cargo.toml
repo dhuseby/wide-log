@@ -1,6 +1,6 @@
 [package]
 name = "wide-log"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["David Grantham"]
 edition = "2024"
 description = "A fast wide event logging crate a la loggingsucks.com"
@@ -19,8 +19,8 @@ smallvec = { version = "1", features = ["union", "write", "serde"] }
 sonic-rs = "0"
 thiserror = "2"
 tracing = "0"
-ulid = "2"
-wide-log-macros = { version = "0", path = "wide-log-macros" }
+ulid = "3"
+wide-log-macros = { version = "0.4", path = "wide-log-macros" }
 
 # optional
 tokio = { version = "1", features = ["rt"], optional = true }
@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4"], optional = true }
 [features]
 default = []
 tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
-uuid = ["dep:uuid"]
+uuid = ["dep:uuid", "wide-log-macros/uuid"]
 
 [dev-dependencies]
 tracing-subscriber = { version = "0", features = ["env-filter"] }
@@ -57,3 +57,6 @@ required-features = ["tokio"]
 [[example]]
 name = "axum_ok"
 required-features = ["tokio"]
+
+[[example]]
+name = "custom_keys"

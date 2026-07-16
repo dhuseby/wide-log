@@ -46,6 +46,23 @@
 //!   The `timestamp` is set to an RFC 3339 string on drop. The `id` is
 //!   set to a ULID string (or UUIDv4 with the `uuid` feature) on `build()`.
 //!
+//! ## Customizable Key Strings
+//!
+//! All 8 built-in key strings can be renamed using an optional bracketed
+//! override list before the JSON object:
+//!
+//! ```rust,ignore
+//! wide_log!([
+//!   Event.Id => "correlation_id",
+//!   Log.Level => "severity",
+//! ], {
+//!   "service": { "name": null },
+//!   "requests": counter!,
+//! });
+//! ```
+//!
+//! See the README for the full list of override paths.
+//!
 //! ## Builder Pattern
 //!
 //! Use `WideLogGuard::builder()` to construct a guard. The builder allows
@@ -90,16 +107,16 @@
 //! - `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
 //!   generation instead of the default ULID.
 
-pub mod context;
-pub mod error;
-pub mod guard;
-pub mod key;
+pub(crate) mod context;
+pub(crate) mod error;
+pub(crate) mod guard;
+pub(crate) mod key;
 pub(crate) mod log;
-pub mod value;
-pub mod wide_event;
+pub(crate) mod value;
+pub(crate) mod wide_event;
 
 #[cfg(feature = "tokio")]
-pub mod middleware;
+pub(crate) mod middleware;
 
 pub use error::Error;
 pub use guard::ScopedGuard;
@@ -166,5 +183,11 @@ pub mod __re_exports {
 pub mod __re_exports_core {
     pub use chrono;
     pub use chrono_tz;
+    pub use tracing;
     pub use ulid;
+}
+
+#[cfg(feature = "uuid")]
+pub mod __re_exports_uuid {
+    pub use uuid;
 }

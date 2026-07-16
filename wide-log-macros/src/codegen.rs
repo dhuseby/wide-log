@@ -1,10 +1,15 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::parse::{JsonNode, Marker, Number};
+use crate::parse::{DurationOverride, EventOverride, JsonNode, KeyOverrides, LogOverride, Marker, Number};
 
-pub fn generate(root: JsonNode, tokio: bool) -> Result<TokenStream2, syn::Error> {
-    let mut ctx = GenContext::new();
+pub fn generate(
+    root: JsonNode,
+    overrides: KeyOverrides,
+    tokio: bool,
+    uuid: bool,
+) -> Result<TokenStream2, syn::Error> {
+    let mut ctx = GenContext::new(overrides);
     ctx.walk(&root, &[])?;
 
     ctx.auto_add_duration(&root)?;
@@ -12,7 +17,7 @@ pub fn generate(root: JsonNode, tokio: bool) -> Result<TokenStream2, syn::Error>
 
     ctx.validate()?;
 
-    Ok(ctx.emit(tokio))
+    Ok(ctx.emit(tokio, uuid))
 }
 
 #[derive(Clone, Debug)]
@@ -53,10 +58,25 @@ struct GenContext {
     timestamp_segments: Vec<String>,
     id_segments: Vec<String>,
     has_event_key: bool,
+    // Resolved built-in key strings (user override or default).
+    // Log group (library-level — emitted as Key trait constants):
+    builtin_log: String,
+    builtin_level: String,
+    builtin_message: String,
+    // Event group (macro-level — used in enum building):
+    builtin_event: String,
+    builtin_event_id: String,
+    builtin_event_timestamp: String,
+    // Duration group (macro-level — used in enum building):
+    builtin_duration: String,
+    builtin_duration_total_ms: String,
 }
 
 impl GenContext {
-    fn new() -> Self {
+    fn new(overrides: KeyOverrides) -> Self {
+        let LogOverride { key, level, message } = overrides.log;
+        let EventOverride { key: ev_key, id, timestamp } = overrides.event;
+        let DurationOverride { key: dur_key, total_ms } = overrides.duration;
         Self {
             keys: Vec::new(),
             key_index: std::collections::BTreeMap::new(),
@@ -68,6 +88,14 @@ impl GenContext {
             timestamp_segments: Vec::new(),
             id_segments: Vec::new(),
             has_event_key: false,
+            builtin_log: key.unwrap_or_else(|| "log".to_string()),
+            builtin_level: level.unwrap_or_else(|| "level".to_string()),
+            builtin_message: message.unwrap_or_else(|| "message".to_string()),
+            builtin_event: ev_key.unwrap_or_else(|| "event".to_string()),
+            builtin_event_id: id.unwrap_or_else(|| "id".to_string()),
+            builtin_event_timestamp: timestamp.unwrap_or_else(|| "timestamp".to_string()),
+            builtin_duration: dur_key.unwrap_or_else(|| "duration".to_string()),
+            builtin_duration_total_ms: total_ms.unwrap_or_else(|| "total_ms".to_string()),
         }
     }
 
@@ -168,13 +196,13 @@ impl GenContext {
     fn auto_add_duration(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_duration = entries.iter().any(|(k, _)| k == "duration");
+                let has_duration = entries.iter().any(|(k, _)| *k == self.builtin_duration);
                 if !has_duration {
-                    self.add_duration_subtree("total_ms");
+                    self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
                 } else {
                     let duration_node = entries
                         .iter()
-                        .find(|(k, _)| k == "duration")
+                        .find(|(k, _)| *k == self.builtin_duration)
                         .map(|(_, v)| v)
                         .unwrap();
                     self.resolve_duration_subtree(duration_node)?;
@@ -186,7 +214,7 @@ impl GenContext {
     }
 
     fn add_duration_subtree(&mut self, leaf: &str) {
-        let duration_seg = "duration".to_string();
+        let duration_seg = self.builtin_duration.clone();
         let leaf_seg = leaf.to_string();
         self.add_key(&duration_seg);
         self.add_key(&leaf_seg);
@@ -200,12 +228,12 @@ impl GenContext {
     fn resolve_duration_subtree(&mut self, node: &JsonNode) -> Result<(), syn::Error> {
         match node {
             JsonNode::Object(entries) => {
-                let duration_seg = "duration".to_string();
+                let duration_seg = self.builtin_duration.clone();
                 self.add_key(&duration_seg);
                 self.add_path(&[duration_seg.clone()]);
 
                 if entries.is_empty() {
-                    self.add_duration_subtree("total_ms");
+                    self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
                     return Ok(());
                 }
 
@@ -230,16 +258,17 @@ impl GenContext {
                     return Ok(());
                 }
 
-                let total_ms_entry = entries.iter().find(|(k, _)| k == "total_ms");
+                let total_ms_str = self.builtin_duration_total_ms.clone();
+                let total_ms_entry = entries.iter().find(|(k, _)| *k == total_ms_str);
 
                 if total_ms_entry.is_some() {
                     for (k, v) in entries {
-                        if k == "total_ms" {
-                            self.add_key("total_ms");
-                            self.add_path(&[duration_seg.clone(), "total_ms".to_string()]);
+                        if *k == total_ms_str {
+                            self.add_key(&total_ms_str);
+                            self.add_path(&[duration_seg.clone(), total_ms_str.clone()]);
                             self.has_duration_marker = true;
                             self.duration_segments =
-                                vec![duration_seg.clone(), "total_ms".to_string()];
+                                vec![duration_seg.clone(), total_ms_str.clone()];
                         } else {
                             let p = vec![duration_seg.clone(), k.clone()];
                             self.walk(v, &p)?;
@@ -273,7 +302,7 @@ impl GenContext {
                 ))
             }
             _ => {
-                self.add_duration_subtree("total_ms");
+                self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
                 Ok(())
             }
         }
@@ -282,13 +311,13 @@ impl GenContext {
     fn auto_add_event(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_event = entries.iter().any(|(k, _)| k == "event");
+                let has_event = entries.iter().any(|(k, _)| *k == self.builtin_event);
                 if !has_event {
                     self.add_event_subtree();
                 } else {
                     let event_node = entries
                         .iter()
-                        .find(|(k, _)| k == "event")
+                        .find(|(k, _)| *k == self.builtin_event)
                         .map(|(_, v)| v)
                         .unwrap();
                     self.resolve_event_subtree(event_node)?;
@@ -300,22 +329,24 @@ impl GenContext {
     }
 
     fn add_event_subtree(&mut self) {
-        let event_seg = "event".to_string();
-        let timestamp_seg = "timestamp".to_string();
-        let id_seg = "id".to_string();
+        let event_seg = self.builtin_event.clone();
+        let timestamp_seg = self.builtin_event_timestamp.clone();
+        let id_seg = self.builtin_event_id.clone();
         self.add_key(&event_seg);
         self.add_key(&timestamp_seg);
         self.add_key(&id_seg);
         self.add_path(&[event_seg.clone()]);
         self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
         self.add_path(&[event_seg.clone(), id_seg.clone()]);
-        self.timestamp_segments = vec![event_seg, timestamp_seg];
-        self.id_segments = vec!["event".to_string(), id_seg];
+        self.timestamp_segments = vec![event_seg.clone(), timestamp_seg];
+        self.id_segments = vec![event_seg, id_seg];
         self.has_event_key = true;
     }
 
     fn resolve_event_subtree(&mut self, node: &JsonNode) -> Result<(), syn::Error> {
-        let event_seg = "event".to_string();
+        let event_seg = self.builtin_event.clone();
+        let timestamp_str = self.builtin_event_timestamp.clone();
+        let id_str = self.builtin_event_id.clone();
         match node {
             JsonNode::Object(entries) => {
                 self.add_key(&event_seg);
@@ -326,42 +357,39 @@ impl GenContext {
                     return Ok(());
                 }
 
-                let has_timestamp = entries.iter().any(|(k, _)| k == "timestamp");
-                let has_id = entries.iter().any(|(k, _)| k == "id");
+                let has_timestamp = entries.iter().any(|(k, _)| *k == timestamp_str);
+                let has_id = entries.iter().any(|(k, _)| *k == id_str);
 
                 if !has_timestamp {
-                    let timestamp_seg = "timestamp".to_string();
-                    self.add_key(&timestamp_seg);
-                    self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
-                    self.timestamp_segments = vec![event_seg.clone(), timestamp_seg];
+                    self.add_key(&timestamp_str);
+                    self.add_path(&[event_seg.clone(), timestamp_str.clone()]);
+                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
                 } else {
                     let ts_node = entries
                         .iter()
-                        .find(|(k, _)| k == "timestamp")
+                        .find(|(k, _)| *k == timestamp_str)
                         .map(|(_, v)| v)
                         .unwrap();
-                    self.walk(ts_node, &[event_seg.clone(), "timestamp".to_string()])?;
-                    self.timestamp_segments =
-                        vec![event_seg.clone(), "timestamp".to_string()];
+                    self.walk(ts_node, &[event_seg.clone(), timestamp_str.clone()])?;
+                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
                 }
 
                 if !has_id {
-                    let id_seg = "id".to_string();
-                    self.add_key(&id_seg);
-                    self.add_path(&[event_seg.clone(), id_seg.clone()]);
-                    self.id_segments = vec![event_seg.clone(), id_seg];
+                    self.add_key(&id_str);
+                    self.add_path(&[event_seg.clone(), id_str.clone()]);
+                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
                 } else {
                     let id_node = entries
                         .iter()
-                        .find(|(k, _)| k == "id")
+                        .find(|(k, _)| *k == id_str)
                         .map(|(_, v)| v)
                         .unwrap();
-                    self.walk(id_node, &[event_seg.clone(), "id".to_string()])?;
-                    self.id_segments = vec![event_seg.clone(), "id".to_string()];
+                    self.walk(id_node, &[event_seg.clone(), id_str.clone()])?;
+                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
                 }
 
                 for (k, v) in entries {
-                    if k != "timestamp" && k != "id" {
+                    if *k != timestamp_str && *k != id_str {
                         let p = vec![event_seg.clone(), k.clone()];
                         self.walk(v, &p)?;
                     }
@@ -407,7 +435,7 @@ impl GenContext {
         Ok(())
     }
 
-    fn emit(&self, tokio: bool) -> TokenStream2 {
+    fn emit(&self, tokio: bool, uuid: bool) -> TokenStream2 {
         let enum_variants: Vec<syn::Ident> = self
             .keys
             .iter()
@@ -509,6 +537,10 @@ impl GenContext {
 
         let key_strs: Vec<&str> = self.keys.iter().map(|k| k.json_name.as_str()).collect();
 
+        let builtin_log = self.builtin_log.as_str();
+        let builtin_level = self.builtin_level.as_str();
+        let builtin_message = self.builtin_message.as_str();
+
         let key_impl = quote! {
             impl ::wide_log::Key for EventKey {
                 fn as_str(self) -> &'static str {
@@ -521,6 +553,9 @@ impl GenContext {
                 const DURATION_PATH: &'static [Self] = &[#(#duration_path_idents),*];
                 const TIMESTAMP_PATH: &'static [Self] = &[#(#timestamp_path_idents),*];
                 const ID_PATH: &'static [Self] = &[#(#id_path_idents),*];
+                const LOG_KEY: &'static str = #builtin_log;
+                const LEVEL_KEY: &'static str = #builtin_level;
+                const MESSAGE_KEY: &'static str = #builtin_message;
             }
         };
 
@@ -552,7 +587,7 @@ impl GenContext {
                     if ev.serialize_to(&mut *buf).is_ok() {
                         // Safety: our serializer only writes valid UTF-8.
                         let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
-                        ::tracing::info!(target: "wide_log", event = %json);
+                        ::wide_log::__re_exports_core::tracing::info!(target: "wide_log", event = %json);
                     }
                 });
             }
@@ -574,7 +609,7 @@ impl GenContext {
         };
 
         let default_id_fn = quote! {
-            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string())
+            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string())
         };
 
         let builder_struct = quote! {
@@ -647,15 +682,18 @@ impl GenContext {
             }
         };
 
-        let builder_uuid = quote! {
-            #[cfg(feature = "uuid")]
-            impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
-                WideLogGuardBuilder<F>
-            {
-                pub fn with_uuid(self) -> Self {
-                    self.with_id(|| ::uuid::Uuid::new_v4().to_string())
+        let builder_uuid = if uuid {
+            quote! {
+                impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
+                    WideLogGuardBuilder<F>
+                {
+                    pub fn with_uuid(self) -> Self {
+                        self.with_id(|| ::wide_log::__re_exports_uuid::uuid::Uuid::new_v4().to_string())
+                    }
                 }
             }
+        } else {
+            TokenStream2::new()
         };
 
         let guard_builder_fn = quote! {
@@ -721,7 +759,7 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string();
+                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string();
                     let mut inner = ::std::boxed::Box::new(
                         ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
                     );

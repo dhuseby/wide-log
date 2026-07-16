@@ -4,6 +4,7 @@ use std::time::Instant;
 use chrono_tz::Tz;
 
 use crate::key::Key;
+use crate::value::Value;
 use crate::wide_event::WideEvent;
 
 /// RAII guard that owns a [`WideEvent`] and emits it on drop.
@@ -36,16 +37,6 @@ impl<K: Key, F> ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
-    /// Creates a new guard with the given emit function and UTC timezone.
-    ///
-    /// The timer starts immediately. On drop, the guard sets
-    /// `K::DURATION_PATH` to the elapsed milliseconds, sets
-    /// `K::TIMESTAMP_PATH` to the current UTC time as RFC 3339, and
-    /// calls `emit_fn`.
-    pub fn new(emit_fn: F) -> Self {
-        Self::new_with_tz(emit_fn, Tz::UTC)
-    }
-
     /// Creates a new guard with the given emit function and timezone.
     ///
     /// The timezone is used to format the timestamp set on drop.
@@ -57,6 +48,22 @@ where
             emit_fn: Some(emit_fn),
         }
     }
+}
+
+#[cfg(test)]
+impl<K: Key, F> ScopedGuard<K, F>
+where
+    F: FnOnce(&WideEvent<K>) + Send + 'static,
+{
+    /// Creates a new guard with the given emit function and UTC timezone.
+    ///
+    /// The timer starts immediately. On drop, the guard sets
+    /// `K::DURATION_PATH` to the elapsed milliseconds, sets
+    /// `K::TIMESTAMP_PATH` to the current UTC time as RFC 3339, and
+    /// calls `emit_fn`.
+    pub(crate) fn new(emit_fn: F) -> Self {
+        Self::new_with_tz(emit_fn, Tz::UTC)
+    }
 
     /// Creates a new guard with the given emit function, timezone, and a
     /// type-conflict callback.
@@ -65,7 +72,11 @@ where
     /// has a non-object value. See [`WideEvent::new_with_warnings`].
     ///
     /// [`WideEvent::new_with_warnings`]: crate::WideEvent::new_with_warnings
-    pub fn new_with_warnings(emit_fn: F, tz: Tz, on_type_conflict: crate::wide_event::ConflictFn<K>) -> Self {
+    pub(crate) fn new_with_warnings(
+        emit_fn: F,
+        tz: Tz,
+        on_type_conflict: crate::wide_event::ConflictFn<K>,
+    ) -> Self {
         Self {
             event: WideEvent::new_with_warnings(on_type_conflict),
             start: Instant::now(),
@@ -130,12 +141,12 @@ where
             }
 
             // Now write the leaf values
-            if let Some(Some(v)) = self.event.values.get_mut(dur_idx) {
-                unsafe { &mut **v.data.object }.add(K::DURATION_PATH[1], duration_ms);
+            if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(dur_idx) {
+                obj.add(K::DURATION_PATH[1], duration_ms);
             }
             let now = chrono::Utc::now().with_timezone(&self.tz);
-            if let Some(Some(v)) = self.event.values.get_mut(ts_idx) {
-                unsafe { &mut **v.data.object }.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
+            if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(ts_idx) {
+                obj.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
             }
         } else {
             self.event.add_path(K::DURATION_PATH, duration_ms);
@@ -257,15 +268,18 @@ mod tests {
             let idx = TestKey::Tag.as_index();
             // Check if there's already an array at Tag
             let existing = event.values.get(idx).and_then(|v| v.as_ref());
-            if let Some(v) = existing {
-                if let Some(arr) = v.as_array_ref() {
-                    let mut new_arr = arr.clone();
-                    new_arr.push(Value::from(warning));
-                    event.add(TestKey::Tag, Value::from_array(new_arr));
-                    return;
-                }
+            if let Some(v) = existing
+                && let Some(arr) = v.as_array_ref()
+            {
+                let mut new_arr = arr.clone();
+                new_arr.push(Value::from(warning));
+                event.add(TestKey::Tag, Value::from_array(new_arr));
+                return;
             }
-            event.add(TestKey::Tag, Value::from_array(smallvec![Value::from(warning)]));
+            event.add(
+                TestKey::Tag,
+                Value::from_array(smallvec![Value::from(warning)]),
+            );
         });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);

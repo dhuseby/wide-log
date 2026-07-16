@@ -36,13 +36,6 @@ impl<T> ContextCell<T> {
         }
     }
 
-    /// Returns the stored pointer, or `None` if null.
-    #[inline]
-    pub fn get(&self) -> Option<*mut T> {
-        let ptr = self.ptr.get();
-        if ptr.is_null() { None } else { Some(ptr) }
-    }
-
     /// Returns the stored raw pointer (null if unset).
     #[inline]
     pub fn get_ptr(&self) -> *mut T {
@@ -57,16 +50,26 @@ impl<T> ContextCell<T> {
         prev
     }
 
-    /// Clears the stored pointer to null. Returns the previous pointer.
-    #[inline]
-    pub fn clear(&self) -> *mut T {
-        self.replace(std::ptr::null_mut())
-    }
-
     /// Restores a previously saved pointer (typically from `replace` or `clear`).
     #[inline]
     pub fn restore(&self, ptr: *mut T) {
         self.ptr.set(ptr);
+    }
+}
+
+#[cfg(test)]
+impl<T> ContextCell<T> {
+    /// Returns the stored pointer, or `None` if null.
+    #[inline]
+    pub(crate) fn get(&self) -> Option<*mut T> {
+        let ptr = self.ptr.get();
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+
+    /// Clears the stored pointer to null. Returns the previous pointer.
+    #[inline]
+    pub(crate) fn clear(&self) -> *mut T {
+        self.replace(std::ptr::null_mut())
     }
 
     /// Returns a `&'static mut T` reference to the event if the pointer is non-null.
@@ -78,7 +81,7 @@ impl<T> ContextCell<T> {
     /// the returned borrow. In practice, this is guaranteed by the guard's
     /// lifetime — the guard outlives all `current()` calls within its scope.
     #[inline]
-    pub unsafe fn deref_mut(&self) -> Option<&'static mut T> {
+    pub(crate) unsafe fn deref_mut(&self) -> Option<&'static mut T> {
         let ptr = self.ptr.get();
         if ptr.is_null() {
             None
