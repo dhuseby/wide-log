@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
+#[allow(clippy::type_complexity)]
 fn capture() -> (
     CaptureSlot,
     impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,

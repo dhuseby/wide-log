@@ -58,20 +58,15 @@ mod tests {
 
     #[test]
     fn serialize_log_entry_owned() {
-        let entry = LogEntry::<TestKey>::new(
-            "info",
-            LogMsg::Owned(FastStr::new("request received")),
-        );
+        let entry =
+            LogEntry::<TestKey>::new("info", LogMsg::Owned(FastStr::new("request received")));
         let s = sonic_rs::to_string(&entry).unwrap();
         assert_eq!(s, r#"{"level":"info","message":"request received"}"#);
     }
 
     #[test]
     fn serialize_log_entry_static() {
-        let entry = LogEntry::<TestKey>::new(
-            "warn",
-            LogMsg::Static("upstream slow"),
-        );
+        let entry = LogEntry::<TestKey>::new("warn", LogMsg::Static("upstream slow"));
         let s = sonic_rs::to_string(&entry).unwrap();
         assert_eq!(s, r#"{"level":"warn","message":"upstream slow"}"#);
     }

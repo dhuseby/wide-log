@@ -608,7 +608,7 @@ impl GenContext {
         };
 
         let default_id_fn = quote! {
-            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string())
+            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string())
         };
 
         let builder_struct = quote! {
@@ -755,7 +755,7 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::r#gen().to_string();
+                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string();
                     let mut inner = ::std::boxed::Box::new(
                         ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
                     );
