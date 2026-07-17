@@ -1,7 +1,7 @@
 [package]
 name = "wide-log"
-version = "0.4.0"
-authors = ["David Grantham"]
+version = "0.5.0"
+authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 description = "A fast wide event logging crate a la loggingsucks.com"
 license = "Apache-2.0"
@@ -18,7 +18,6 @@ serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1", features = ["union", "write", "serde"] }
 sonic-rs = "0"
 thiserror = "2"
-tracing = "0"
 ulid = "3"
 wide-log-macros = { version = "0.4", path = "wide-log-macros" }
 
@@ -33,7 +32,7 @@ tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 uuid = ["dep:uuid", "wide-log-macros/uuid"]
 
 [dev-dependencies]
-tracing-subscriber = { version = "0", features = ["env-filter"] }
+tracing = "0"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net"] }
 axum = { version = "0", default-features = false, features = ["http1", "tokio"] }
 criterion = { version = "0", default-features = false, features = ["cargo_bench_support", "plotters"] }

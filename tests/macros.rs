@@ -429,31 +429,3 @@ fn all_log_macros_shadow_tracing() {
     assert_eq!(log[3]["message"], "d");
     assert_eq!(log[4]["message"], "t");
 }
-
-// ---- Verify ::tracing::info! in default_emit calls the real tracing macro ----
-
-#[test]
-fn default_emit_uses_real_tracing_macro() {
-    // Just verify builder().build() + info! + drop works without panic.
-    let _guard = WideLogGuard::builder().build();
-    info!("test message via default emit");
-    drop(_guard);
-    // If default_emit used the shadowing info!, it would be a no-op
-    // (current() is None during emit). The event would still be serialized
-    // and sent to tracing. So the test passing means no panic/stack overflow.
-}
-
-#[test]
-fn default_emit_does_not_cause_infinite_recursion() {
-    let _guard = WideLogGuard::builder().build();
-
-    // Call the real tracing::info! — this should go to tracing, not the log list.
-    ::tracing::info!("real tracing message");
-
-    // Call the wide-log info! — this should go to the log list.
-    info!("wide-log message");
-
-    drop(_guard);
-    // No panic = success. The guard drops, default_emit calls ::tracing::info!,
-    // which outputs the JSON event to tracing.
-}

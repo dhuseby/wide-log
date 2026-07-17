@@ -10,8 +10,6 @@ wide_log!({
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     let mut handles = vec![];
     for i in 0..10 {
         handles.push(tokio::spawn(handle_request(i)));
@@ -34,5 +32,5 @@ async fn handle_request(id: u64) {
         info!("request {} completed", id);
     })
     .await;
-    // guard drops → event emitted with duration.total_ms
+    // guard drops → event written to stdout with duration.total_ms
 }

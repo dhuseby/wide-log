@@ -14,15 +14,14 @@ wide_log!([
 });
 
 fn main() {
-    tracing_subscriber::fmt().init();
-
     let _guard = WideLogGuard::builder().build();
 
     wl_inc!("requests");
     info!("request received");
     warn!("upstream slow");
 
-    // _guard drops → emitted JSON uses custom key names:
+    // _guard drops → emitted JSON uses custom key names, written to
+    // non-blocking stdout:
     // {"service":{"name":"example","version":"1.0.0"},
     //  "duration":{"elapsed_ms":0},"requests":1,
     //  "event":{"timestamp":"...","correlation_id":"01J6XK5R..."},

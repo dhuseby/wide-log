@@ -243,7 +243,7 @@ drop. It is constructed via `WideLogGuard::builder().build()`:
 | `with_timezone(tz: chrono_tz::Tz)` | Timezone for timestamp formatting | `chrono_tz::Tz::UTC` |
 | `with_id(F: FnOnce() -> String)` | Custom ID generator closure | ULID via `ulid` crate |
 | `with_uuid()` | Use UUIDv4 for ID (requires `uuid` feature) | — |
-| `with_emit(F: FnOnce(&WideEvent))` | Custom emit function | `default_emit` (direct serialize + `::tracing::info!`) |
+| `with_emit(F: FnOnce(&WideEvent))` | Custom emit function | `default_emit` (direct serialize + non-blocking stdout) |
 | `build()` | Construct the guard | — |
 
 On drop, the guard:
@@ -290,7 +290,10 @@ The crate is designed for high-throughput logging:
   array indexed by `as_index()`, replacing a multi-arm `match` with a branchless
   array index.
 - **Thread-local reusable emit buffer** — `default_emit` writes into a
-  thread-local `Vec<u8>` that is cleared (not freed) on each emit.
+  thread-local `Vec<u8>` that is cleared (not freed) on each emit. The
+  serialized JSON is then handed to a single dedicated non-blocking stdout
+  writer thread via an unbounded `std::sync::mpsc` channel — the calling
+  thread never blocks on I/O.
 - **`#[inline(always)]` on `current()`** — the TLS/task-local pointer lookup
   is fully inlined at every call site.
 - **Zero shared state** — the hot path uses thread-local/task-local pointers,

@@ -587,7 +587,7 @@ impl GenContext {
                     if ev.serialize_to(&mut *buf).is_ok() {
                         // Safety: our serializer only writes valid UTF-8.
                         let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
-                        ::wide_log::__re_exports_core::tracing::info!(target: "wide_log", event = %json);
+                        ::wide_log::stdout_emit::submit(json);
                     }
                 });
             }
