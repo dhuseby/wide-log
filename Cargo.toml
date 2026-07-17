@@ -1,6 +1,6 @@
 [package]
 name = "wide-log"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 description = "A fast wide event logging crate a la loggingsucks.com"
@@ -19,7 +19,7 @@ smallvec = { version = "1", features = ["union", "write", "serde"] }
 sonic-rs = "0"
 thiserror = "2"
 ulid = "3"
-wide-log-macros = { version = "0.4", path = "wide-log-macros" }
+wide-log-macros = { version = "0.4.1", path = "wide-log-macros" }
 
 # optional
 tokio = { version = "1", features = ["rt"], optional = true }

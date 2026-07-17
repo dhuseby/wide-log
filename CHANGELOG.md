@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-07-17
+
+### Fixed
+- Republish fix: `wide-log 0.5.1` shipped against the stale `wide-log-macros
+  0.4.0` on crates.io, whose generated `default_emit` still referenced
+  `::wide_log::__re_exports_core::tracing` — a re-export that `0.5.0`/`0.5.1`
+  removed. The crate compiled locally (the repo uses a `path` dep on
+  `wide-log-macros`) but failed for anyone resolving from the registry, and
+  the crate's own examples would not build against the published artifacts.
+  `wide-log-macros 0.4.1` carries the already-in-repo codegen fix
+  (`default_emit` writes the bare JSON line via `stdout_emit::submit`), and
+  `wide-log 0.5.2` now requires `wide-log-macros = "0.4.1"`, forcing stale
+  `Cargo.lock` files to upgrade off the broken `0.4.0`.
+
+### Changed
+- `wide-log-macros` dependency pinned from `"0.4"` to `"0.4.1"`.
+
+## [wide-log-macros 0.4.1] - 2026-07-17
+
+### Fixed
+- `default_emit` now writes the serialized wide-event JSON line directly to
+  non-blocking stdout via `::wide_log::stdout_emit::submit` instead of routing
+  through `::wide_log::__re_exports_core::tracing::info!`. The `tracing`
+  re-export was removed from `wide-log` in `0.5.0`, so the previous generated
+  code referenced a path that no longer exists. This is the published
+  counterpart to the `default_emit` fix that already shipped in the `wide-log`
+  repo at commit `3d59d83` but was never released as a new `wide-log-macros`
+  version.
+
 ## [0.5.0] - 2026-07-17
 
 ### Changed
