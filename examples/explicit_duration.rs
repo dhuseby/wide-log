@@ -9,8 +9,6 @@ wide_log!({
 });
 
 fn main() {
-    tracing_subscriber::fmt().init();
-
     let _guard = WideLogGuard::builder().build();
 
     wl_set!("service.name", "explicit-duration-example");
@@ -18,4 +16,5 @@ fn main() {
     info!("request received");
 
     // _guard drops → duration.wall_ms is set (not duration.total_ms).
+    // The event is serialized to JSON and written to non-blocking stdout.
 }

@@ -33,7 +33,9 @@ everything from a JSON object literal.
 - **Thread-local reusable emit buffer** — the `default_emit` function writes
   into a thread-local `Vec<u8>` that is cleared (not freed) on each emit. The
   buffer grows once to the high-water mark and reuses that allocation for all
-  subsequent emits.
+  subsequent emits. The serialized JSON is then handed to a single dedicated
+  non-blocking stdout writer thread via an unbounded `std::sync::mpsc`
+  channel — the calling thread never blocks on I/O.
 - **`#[inline(always)]` on `current()`** — the TLS pointer lookup is fully
   inlined at every `wl_set!`/`info!` call site. Uses `ContextCell::get_ptr()`
   which returns a raw pointer (no `Option` wrapping inside the closure).
@@ -59,8 +61,6 @@ wide_log!({
 });
 
 fn main() {
-    tracing_subscriber::fmt().init();
-
     let _guard = WideLogGuard::builder().build();
 
     wl_inc!("requests");
@@ -69,7 +69,8 @@ fn main() {
     warn!("upstream slow");
 
     // _guard drops here → duration.total_ms and event.timestamp are set
-    // automatically, event is serialized to JSON, emitted via ::tracing::info!:
+    // automatically, event is serialized to JSON and written to
+    // non-blocking stdout as a single line:
     //
     // {"service":{"name":"example-service","version":"1.0.0"},
     //  "duration":{"total_ms":42},"requests":1,
@@ -144,7 +145,7 @@ Use `WideLogGuard::builder()` to construct a guard. The builder allows
 specifying a custom timezone, ID generator, and emit function:
 
 ```rust
-// Default: UTC timezone, ULID ID, tracing emit
+// Default: UTC timezone, ULID ID, non-blocking stdout emit
 let _guard = WideLogGuard::builder().build();
 
 // Custom timezone
@@ -183,7 +184,7 @@ let _guard = WideLogGuard::builder()
 | `with_timezone(tz: chrono_tz::Tz)` | Timezone for timestamp formatting | `chrono_tz::Tz::UTC` |
 | `with_id(F: FnOnce() -> String)` | Custom ID generator closure | ULID via `ulid` crate |
 | `with_uuid()` | Use UUIDv4 for ID (requires `uuid` feature) | — |
-| `with_emit(F: FnOnce(&WideEvent)>)` | Custom emit function | `default_emit` (serialize + `::tracing::info!`) |
+| `with_emit(F: FnOnce(&WideEvent)>)` | Custom emit function | `default_emit` (serialize + non-blocking stdout) |
 | `build()` | Construct the guard | — |
 
 ## Usage
@@ -202,8 +203,6 @@ wide_log!({
 });
 
 fn main() {
-    tracing_subscriber::fmt().init();
-
     let _guard = WideLogGuard::builder().build();
 
     wl_inc!("requests");
@@ -212,7 +211,8 @@ fn main() {
     warn!("upstream slow");
 
     // _guard drops here → duration.total_ms and event.timestamp are set
-    // automatically, event is serialized to JSON, emitted via ::tracing::info!.
+    // automatically, event is serialized to JSON and written to
+    // non-blocking stdout.
 }
 ```
 
@@ -231,8 +231,6 @@ wide_log!({
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     handle_request().await;
 }
 
@@ -246,7 +244,7 @@ async fn handle_request() {
 
         info!("request completed");
     }).await;
-    // guard drops here → duration.total_ms set, event emitted
+    // guard drops here → duration.total_ms set, event written to stdout
 }
 
 async fn fetch_upstream() {
@@ -272,8 +270,6 @@ wide_log!({
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     let mut handles = vec![];
     for i in 0..10 {
         handles.push(tokio::spawn(handle_request(i)));
@@ -295,7 +291,7 @@ async fn handle_request(id: u64) {
 
         info!("request {} completed", id);
     }).await;
-    // guard drops → event emitted with duration and timestamp
+    // guard drops → event written to stdout with duration and timestamp
 }
 ```
 
@@ -337,8 +333,6 @@ async fn ok() -> &'static str {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     let app = Router::new()
         .route("/ok", get(ok))
         .layer(WideLogLayer);
@@ -509,9 +503,11 @@ The `info!`, `warn!`, `error!`, `debug!`, `trace!` macros are
 these shadow `tracing::info!` etc. To call the real `tracing` macros, use the
 fully qualified path: `::tracing::info!(...)`.
 
-The generated `default_emit` function uses `::tracing::info!` (fully
-qualified) to avoid calling the shadowing `info!` macro, which would append to
-the log list instead of emitting the JSON line.
+The generated `default_emit` function does **not** route through `tracing` —
+it writes the serialized JSON line directly to non-blocking stdout via
+`stdout_emit::submit`. (Wide-log's `info!`/`warn!`/etc. still shadow tracing's
+when both are in scope, which is why you must use the fully qualified path
+when you want the real tracing macro.)
 
 ## Features
 

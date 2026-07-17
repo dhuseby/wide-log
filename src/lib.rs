@@ -13,7 +13,7 @@
 //! feature), and all logging macros (`wl_set!`, `wl_inc!`, `info!`, etc.) in
 //! one invocation.
 //!
-//! ```rust,ignore
+//! ```
 //! use wide_log::wide_log;
 //!
 //! wide_log!({
@@ -24,15 +24,15 @@
 //!     "requests": counter!,
 //! });
 //!
-//! fn main() {
-//!     tracing_subscriber::fmt().init();
-//!     let _guard = WideLogGuard::builder().build();
-//!     wl_set!("service.name", "example-service");
-//!     wl_inc!("requests");
-//!     info!("request received");
-//!     // _guard drops → duration.total_ms set, timestamp set,
-//!     // event emitted as JSON.
-//! }
+//! # fn main() {
+//! let _guard = WideLogGuard::builder().build();
+//! wl_set!("service.name", "example-service");
+//! wl_inc!("requests");
+//! info!("request received");
+//! // _guard drops → duration.total_ms set, timestamp set,
+//! // event emitted as a JSON line to non-blocking stdout.
+//! # wide_log::stdout_emit::flush();
+//! # }
 //! ```
 //!
 //! ## Auto-Added Keys
@@ -51,7 +51,9 @@
 //! All 8 built-in key strings can be renamed using an optional bracketed
 //! override list before the JSON object:
 //!
-//! ```rust,ignore
+//! ```
+//! use wide_log::wide_log;
+//!
 //! wide_log!([
 //!   Event.Id => "correlation_id",
 //!   Log.Level => "severity",
@@ -59,6 +61,12 @@
 //!   "service": { "name": null },
 //!   "requests": counter!,
 //! });
+//! # fn main() {
+//! # let _guard = WideLogGuard::builder().build();
+//! # wl_inc!("requests");
+//! # info!("request received");
+//! # wide_log::stdout_emit::flush();
+//! # }
 //! ```
 //!
 //! See the README for the full list of override paths.
@@ -68,8 +76,13 @@
 //! Use `WideLogGuard::builder()` to construct a guard. The builder allows
 //! specifying a custom timezone, ID generator, and emit function:
 //!
-//! ```rust,ignore
-//! // Default: UTC timezone, ULID ID, tracing emit
+//! ```
+//! use wide_log::wide_log;
+//!
+//! wide_log!({ "service": { "name": null }, "requests": counter! });
+//!
+//! # fn main() {
+//! // Default: UTC timezone, ULID ID, non-blocking stdout emit
 //! let _guard = WideLogGuard::builder().build();
 //!
 //! // Custom timezone
@@ -83,22 +96,24 @@
 //!     .with_id(|| "my-custom-id".to_string())
 //!     .build();
 //!
-//! // UUIDv4 ID (requires `uuid` feature)
-//! let _guard = WideLogGuard::builder()
-//!     .with_uuid()
-//!     .build();
-//!
 //! // Custom emit function
 //! let _guard = WideLogGuard::builder()
 //!     .with_emit(|ev| { println!("{}", ev.to_json().unwrap()); })
 //!     .build();
+//! # wide_log::stdout_emit::flush();
+//! # }
 //! ```
+//!
+//! UUIDv4 IDs are available with the `uuid` feature: `WideLogGuard::builder().with_uuid().build()`.
 //!
 //! ## `info!` Shadowing
 //!
 //! The generated `info!`, `warn!`, `error!`, `debug!`, `trace!` macros shadow
 //! `tracing::info!` etc. when both are in scope. To call the real tracing
-//! macros, use the fully qualified path: `::tracing::info!(...)`.
+//! macros, use the fully qualified path: `::tracing::info!(...)`. (The default
+//! `default_emit` no longer routes through `tracing`; it writes the
+//! serialized JSON line directly to non-blocking stdout via
+//! [`stdout_emit::submit`](crate::stdout_emit::submit).)
 //!
 //! ## Features
 //!
@@ -126,6 +141,8 @@ pub use wide_event::WideEvent;
 
 pub use context::ContextCell;
 
+pub mod stdout_emit;
+
 /// The `wide_log!` proc-macro. See the [crate-level documentation](crate)
 /// for syntax and usage details.
 ///
@@ -138,7 +155,8 @@ pub use context::ContextCell;
 ///   `DURATION_PATH`, `TIMESTAMP_PATH`, `ID_PATH`)
 /// - `__wl_resolve_path` — compile-time path resolution function
 /// - Thread-local storage (`CURRENT_EVENT: ContextCell<WideEvent<EventKey>>`)
-/// - `default_emit` — serializes via `sonic_rs` and emits via `::tracing::info!`
+/// - `default_emit` — serializes via `sonic_rs` and writes the JSON line to
+///   non-blocking stdout via `stdout_emit::submit`
 /// - `WideLogGuardBuilder` — builder for constructing guards with timezone,
 ///   ID generator, and emit function
 /// - `WideLogGuard` — guard type (constructed via `builder().build()`)
@@ -183,7 +201,6 @@ pub mod __re_exports {
 pub mod __re_exports_core {
     pub use chrono;
     pub use chrono_tz;
-    pub use tracing;
     pub use ulid;
 }
 

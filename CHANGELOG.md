@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-17
+
+### Changed
+- **Breaking**: `default_emit` now writes the raw wide-event JSON line
+  directly to non-blocking stdout via `stdout_emit::submit` instead of
+  wrapping it in a `tracing::info!` event. The emitted line is exactly the
+  serialized `WideEvent` JSON followed by a `'\n'` — no `INFO`/target/
+  timestamp envelope. Use `with_emit` to plug in a different sink (e.g. a
+  `tracing::info!` event) if you want the old behavior.
+- **Breaking**: `tracing` removed as a runtime dependency. Users who want
+  to route wide events through `tracing` add `tracing` to their own
+  `Cargo.toml` and pass a custom emit closure, e.g.
+  `with_emit(|ev| ::tracing::info!(target: "wide_log", event = %ev.to_json().unwrap()))`.
+
+### Added
+- `stdout_emit` module: process-global non-blocking stdout writer with
+  `pub fn submit(json: String)` and `pub fn dropped_events() -> u64`. A
+  single dedicated writer thread owns a `BufWriter<Stdout>` and receives
+  payloads over an unbounded `std::sync::mpsc` channel; the calling thread
+  never blocks on I/O. On send failure (writer thread exited during
+  teardown), payloads are dropped silently and the atomic dropped-counter
+  is incremented.
+- `tests/stdout_emit.rs`: subprocess stdout-capture integration test that
+  runs `cargo run --example basic` and verifies the emitted line is bare
+  JSON (no tracing envelope) with the expected fields.
+
+### Removed
+- `tracing` from the runtime dependencies and from `__re_exports_core`.
+- `tracing-subscriber` from dev-dependencies.
+- `default_emit_uses_real_tracing_macro` and
+  `default_emit_does_not_cause_infinite_recursion` tests (their premise —
+  `default_emit` routing through `tracing` — no longer holds).
+
 ## [0.4.0] - 2026-07-16
 
 ### Added
@@ -121,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Examples: `basic`, `custom_emit`, `explicit_duration`.
 - Integration and macro test suites.
 
+[0.5.0]: https://github.com/dhuseby/wide-log/releases/tag/0.5.0
 [0.4.0]: https://github.com/dhuseby/wide-log/releases/tag/0.4.0
 [0.3.0]: https://github.com/dhuseby/wide-log/releases/tag/0.3.0
 [0.2.0]: https://github.com/dhuseby/wide-log/releases/tag/0.2.0

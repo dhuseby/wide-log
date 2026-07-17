@@ -10,8 +10,6 @@ wide_log!({
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     handle_request().await;
 }
 
@@ -26,7 +24,7 @@ async fn handle_request() {
         info!("request completed");
     })
     .await;
-    // guard drops here → duration.total_ms set, event emitted
+    // guard drops here → duration.total_ms set, event written to stdout
 }
 
 async fn fetch_upstream() {

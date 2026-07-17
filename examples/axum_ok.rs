@@ -28,7 +28,7 @@ async fn ok() -> &'static str {
     info!("request completed");
 
     // Handler returns → WideLogLayer drops the guard → sets duration.total_ms,
-    // serializes to JSON, emits via ::tracing::info!.
+    // serializes to JSON, writes to non-blocking stdout.
     ""
 }
 
@@ -44,8 +44,6 @@ async fn fetch_upstream() {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     let app = Router::new().route("/ok", get(ok)).layer(WideLogLayer);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

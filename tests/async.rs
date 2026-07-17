@@ -51,8 +51,8 @@ async fn scope_default_works() {
 
 #[tokio::test]
 async fn scope_default_uses_default_emit() {
-    // scope_default uses the default emit (tracing::info!), so we can't capture.
-    // Just verify it compiles and runs without panic.
+    // scope_default uses the default emit (non-blocking stdout), so we can't
+    // capture in-process. Just verify it compiles and runs without panic.
     let result = scope_default(async {
         wl_set!("status", "ok");
         wl_inc!("requests");
@@ -220,7 +220,7 @@ async fn middleware_wraps_request_in_scope() {
     // The WideLogLayer middleware wraps every request in scope_default().
     // Inside the handler, current() should be Some, and wl_set!/info!
     // should work. When the handler returns, the guard drops and the
-    // event is emitted via default_emit (::tracing::info!).
+    // event is emitted via default_emit (non-blocking stdout).
 
     let mut middleware = WideLogLayer.layer(OkService);
 
@@ -241,8 +241,9 @@ async fn middleware_handler_can_use_macros() {
 
     let mut middleware = WideLogLayer.layer(OkService);
 
-    // We can't easily capture the emitted JSON (default_emit uses tracing),
-    // but we can verify the macros don't panic and the handler runs.
+    // We can't easily capture the emitted JSON (default_emit writes to
+    // non-blocking stdout), but we can verify the macros don't panic and the
+    // handler runs.
     let response = middleware.call("request-body".to_string()).await.unwrap();
 
     assert_eq!(response, "request-body");
