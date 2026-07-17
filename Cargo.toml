@@ -1,6 +1,6 @@
 [package]
 name = "wide-log"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 description = "A fast wide event logging crate a la loggingsucks.com"
