@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-07-19
+
+### Fixed
+- **Writer thread time-based flush no longer hangs when the channel
+  is idle.** In 0.6.2 the writer loop used `for job in rx`, which
+  blocks indefinitely on `mpsc::Receiver::recv()`. The
+  `FlushPolicy::max_interval` timer (default 100 ms) was only
+  checked *when a new `Job` arrived* — so if a consumer of
+  `default_emit` (a test harness, a log shipper, or a sidecar) read
+  its own stdout pipe and no further events were submitted, any
+  bytes still buffered in the writer's `BufWriter` were never
+  flushed and the reader would hang forever. This was the
+  root-cause defect described in `fix.md`. The writer loop in
+  `src/stdout_emit.rs` now uses `rx.recv_timeout(wakeup)` so the
+  thread periodically wakes up on its own — at most every
+  `max_interval` (or every 100 ms for `per_line`, where batches
+  are flushed inline on each `Line`) — and flushes any buffered
+  bytes even when the channel is empty. `RecvTimeoutError::Timeout`
+  triggers the timer-based flush; `RecvTimeoutError::Disconnected`
+  exits the loop so the final drain still runs. Any consumer
+  reading a wide-log process's stdout pipe now observes the
+  buffered line within `max_interval` of the last `submit`,
+  without the producer having to call `stdout_emit::flush()`.
+
+### Added
+- `examples/no_flush.rs`: regression example that emits one
+  wide event and exits *without* calling `stdout_emit::flush()`,
+  relying solely on the writer thread's time-based flush. A
+  reader of the process's stdout pipe observes the JSON line
+  within the default 100 ms `max_interval`. Before the fix, this
+  example produced no output.
+
 ## [0.6.2] - 2026-07-19
 
 ### Fixed

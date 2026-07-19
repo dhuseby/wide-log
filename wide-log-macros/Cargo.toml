@@ -1,6 +1,6 @@
 [package]
 name = "wide-log-macros"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["David Grantham"]
 edition = "2024"
 rust-version = "1.88"

@@ -199,7 +199,7 @@ Example:
 
 ## Implementation: The `wide-log` Crate
 
-The strategy is implemented by the `wide-log` crate (v0.3.0), a high-speed wide
+The strategy is implemented by the `wide-log` crate (v0.6.3), a high-speed wide
 logging system for Rust. A single `wide_log!` proc-macro generates everything
 from a JSON object literal.
 
