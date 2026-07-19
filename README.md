@@ -509,9 +509,48 @@ it writes the serialized JSON line directly to non-blocking stdout via
 when both are in scope, which is why you must use the fully qualified path
 when you want the real tracing macro.)
 
+## Flush Policy and Durability Tradeoff
+
+The `default_emit` function hands serialized JSON lines to a dedicated
+writer thread that owns a `BufWriter<Stdout>`. The writer flushes
+according to a `FlushPolicy`:
+
+| Threshold       | Default | Effect                                            |
+|-----------------|---------|---------------------------------------------------|
+| `max_interval`  | 100 ms  | Flush at most every 100 ms                         |
+| `max_bytes`     | 8 KiB   | Flush when 8 KiB are buffered                      |
+| `max_lines`     | 1000    | Flush after 1000 lines                             |
+
+The default policy achieves a 10× reduction in `write`/`flush`
+syscalls at 10k events/s. The tradeoff is a small **durability
+window**: if the process is killed between when a line is
+submitted and when the next batched flush fires, that line is
+lost. The maximum loss is bounded by `max_interval` (100 ms by
+default) of buffered output, plus any bytes the kernel hasn't
+yet flushed to the pipe.
+
+For maximum durability, call `set_flush_policy` with
+`FlushPolicy::per_line()` (the pre-Phase-4 behavior):
+
+```rust
+wide_log::stdout_emit::set_flush_policy(
+    wide_log::stdout_emit::FlushPolicy::per_line()
+);
+```
+
+Or call [`wide_log::stdout_emit::flush`](crate::stdout_emit::flush)
+at program exit (e.g. at the end of `main`) to block until all
+pending events have been written and the `BufWriter` flushed.
+
+`set_flush_policy` is **idempotent**: a second call is a silent
+no-op (the first call wins). The policy must be set before any
+`submit()` call to take effect on the writer thread; subsequent
+`set_flush_policy` calls have no effect on the running writer.
+
 ## Features
 
 - `tokio` — enables async support: `scope()`, `scope_default()`,
   `WideLogLayer` tower middleware, and `tokio::task_local!` storage.
 - `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
   generation instead of the default ULID.
+

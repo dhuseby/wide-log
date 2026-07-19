@@ -52,6 +52,10 @@ harness = false
 name = "hot_path"
 harness = false
 
+[[bench]]
+name = "writer"
+harness = false
+
 [[test]]
 name = "async"
 required-features = ["tokio"]

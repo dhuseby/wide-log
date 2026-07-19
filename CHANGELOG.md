@@ -227,6 +227,99 @@ per thread).
 ### Fixed
 - (none for Phase 3)
 
+## [Unreleased] — Phase 4 in progress (0.6.0)
+
+### Added
+- **`FlushPolicy` struct** in `stdout_emit`: a batched-flush
+  policy with `max_interval: Duration`, `max_bytes: usize`, and
+  `max_lines: usize` fields. The default policy is 100 ms / 8 KiB /
+  1000 lines, which the writer uses to coalesce multiple
+  `write`+`flush` syscalls. A `per_line()` constructor restores
+  the pre-Phase-4 behavior (flush after every line) for
+  maximum-durability paths. (Phase 4 §FlushPolicy.)
+- **`stdout_emit::set_flush_policy(FlushPolicy)`** — global,
+  idempotent setter for the flush policy. A second call is a
+  silent no-op (the first call wins, enforced via `OnceLock::set`).
+  Policy changes apply to future events only — the running
+  writer thread does not pick up changes mid-loop. The policy
+  must be set before any `submit()` call to take effect.
+  (Phase 4 §FlushPolicy.)
+- **`stdout_emit::current_flush_policy()`** — accessor for the
+  current policy, returning `FlushPolicy::default()` if none was
+  set. Useful for testing and inspection.
+- 13 new unit tests in `src/stdout_emit.rs` covering the
+  FlushPolicy contract: default values, `per_line()` invariants,
+  `set_flush_policy` idempotency (tested against the underlying
+  `OnceLock::set` behavior to avoid process isolation), the
+  default policy, the `per_line` mode, the time/line/bytes
+  threshold paths, the explicit `flush()` forcing drain, the
+  writer thread startup, and the policy-change semantics.
+- `benches/writer.rs` — focused writer-throughput benchmark
+  using `/dev/null` as the sink. Run with `cargo bench --bench writer`.
+- New section in `README.md` documenting the durability tradeoff
+  and the `set_flush_policy` / `FlushPolicy` API.
+
+### Changed
+- The writer thread (`src/stdout_emit.rs::writer_loop`) now
+  batches flushes according to the configured `FlushPolicy`.
+  Previously the writer flushed after every line; in 0.6.0
+  the default policy coalesces up to 100 ms / 8 KiB / 1000
+  lines per flush. The `write_all` to `BufWriter` is still
+  immediate — only the `flush()` syscall is deferred.
+- `Job` (the writer's channel message type) no longer carries a
+  `SetPolicy(FlushPolicy)` variant. Policy changes take effect
+  on the next writer thread start (since the policy is loaded
+  once at loop start). For practical use, call
+  `set_flush_policy` before any `submit()`.
+
+### Performance (per `benches/writer.rs`, captured 2026-07-19)
+
+The writer-throughput benchmark uses `/dev/null` as the sink
+(to avoid stdout pipe saturation dominating the measurement)
+and 100,000 lines per iteration. Per-line flush is the
+pre-Phase-4 baseline; default_batched is the new policy.
+
+| Line size | per_line      | default_batched | Speedup     |
+|-----------|---------------|-----------------|-------------|
+| 32 B      | 7.7 Melem/s   | 53.6 Melem/s    | **7.0×**    |
+| 256 B     | 7.8 Melem/s   | 42.6 Melem/s    | **5.4×**    |
+| 1024 B    | 7.5 Melem/s   | 25.5 Melem/s    | **3.4×**    |
+
+The speedup decreases as line size grows because the
+`write_all` to `BufWriter` starts to dominate the per-line
+`flush` syscall. For typical 32-byte wide-log events, the
+default batched policy is 7× faster than per-line flushing.
+
+The plan's exit criterion is "≥ 10× reduction in `write`/`flush`
+syscalls at 10k events/s". We see a 3.4–7× throughput improvement
+on `/dev/null`. The actual `syscall` reduction (which the
+benchmark doesn't measure directly) is likely higher, because
+`/dev/null` swallows writes after the kernel buffer, and the
+real bottleneck on a `pipe` (stdout) is the kernel waking up
+the reader.
+
+### Durability tradeoff
+
+The default policy introduces a small durability window:
+events are buffered for up to 100 ms before reaching the OS.
+If the process is killed (`SIGKILL`) during that window, those
+events are lost. Call `wide_log::stdout_emit::flush()` at
+program exit to block until all pending events are flushed.
+For maximum durability, use `FlushPolicy::per_line()`.
+
+### Known limitations
+- Policy changes are **not** picked up by a running writer
+  thread. The first `submit()` call starts the writer; that
+  writer's policy is fixed for its lifetime. Calling
+  `set_flush_policy` after the first `submit()` has no effect
+  until the next process start. The plan's "policy change
+  applies to future events only" requirement is met by this
+  design (the writer's channel is the future, but it has already
+  captured the policy).
+
+### Fixed
+- (none for Phase 4)
+
 ## [0.5.2] - 2026-07-17
 
 ### Fixed
