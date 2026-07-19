@@ -593,17 +593,41 @@ impl GenContext {
 
         let thread_local = quote! {
             thread_local! {
-                // `pub(crate)` so the `#[macro_export]`-ed `info!`/
-                // `warn!`/`error!`/`debug!`/`trace!` macros can reach
-                // these thread-locals from sibling modules of the user
-                // crate (the macros expand at the call site, so a
-                // private `static` would not be visible). `pub` would
-                // leak implementation details to downstream crates;
-                // `pub(crate)` is the right level.
-                pub(crate) static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
+                // `pub` (not `pub(crate)`) so the `#[macro_export]`-ed
+                // `info!`/`warn!`/`error!`/`debug!`/`trace!` macros
+                // can reach these thread-locals from a binary crate
+                // that imports the lib where `wide_log!` was invoked.
+                // The macros expand with `$crate::` resolving to the
+                // lib crate (where the `macro_rules!` was textually
+                // defined), and a binary crate that imports the lib
+                // needs to see the thread-locals as `pub` items of
+                // the lib to use the format-arg variants of the log
+                // macros.
+                //
+                // 0.6.1 used `pub(crate)`, which works for sibling
+                // modules of the lib but NOT for binary crates that
+                // depend on the lib (the binary is a separate crate
+                // and `pub(crate)` doesn't cross crate boundaries).
+                // The downstream crate
+                // `backup-quarterback` hit this on every format-arg
+                // `info!`/`warn!`/etc. call from `src/main.rs`
+                // (the binary) with `E0603: constant FMT_BUF is
+                // private`.
+                //
+                // The thread-locals are intentionally not in a
+                // `pub` module — they are emitted at the lib's crate
+                // root by the `wide_log!` proc-macro. Making them
+                // `pub` exposes them to downstream crates that
+                // import the lib, which is the intent (the
+                // format-arg macros need to reach them). The names
+                // are SCREAMING_SNAKE_CASE and the types are
+                // internal buffer types (`RefCell<Vec<u8>>` and
+                // `RefCell<String>`), so the risk of accidental
+                // misuse is low.
+                pub static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
                     const { ::wide_log::ContextCell::new() };
 
-                pub(crate) static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
+                pub static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
                     const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
 
                 // Phase 3 §3.1: reusable thread-local format buffer for
@@ -613,7 +637,7 @@ impl GenContext {
                 // log calls on this thread. Saves the ~50–200 ns/call
                 // of allocating + freeing a fresh `String::with_capacity(64)`
                 // (Phase 0 baseline measurement).
-                pub(crate) static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
+                pub static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
 
                 // Phase 3 §3.2: reusable thread-local ULID buffer.
@@ -623,7 +647,7 @@ impl GenContext {
                 // underlying allocation is preserved across guard
                 // creations, so per-thread steady-state allocation
                 // for the ID path is zero.
-                pub(crate) static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
+                pub static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
             }
         };
