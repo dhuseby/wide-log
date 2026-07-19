@@ -159,9 +159,7 @@ fn parse_overrides(
                 if s.starts_with('"') {
                     unescape_json_string(&s)?
                 } else {
-                    return Err(format!(
-                        "override value must be a string literal, got: {s}"
-                    ));
+                    return Err(format!("override value must be a string literal, got: {s}"));
                 }
             }
             other => {
@@ -223,22 +221,22 @@ fn parse_override_path(
     };
 
     // Check for `.Ident` sub-key
-    if let Some(TokenTree::Punct(p)) = iter.peek() {
-        if p.as_char() == '.' {
-            iter.next(); // consume '.'
-            let second = match iter.next() {
-                Some(TokenTree::Ident(id)) => id.to_string(),
-                other => {
-                    return Err(format!(
-                        "expected sub-key identifier after '.', got: {}",
-                        other
-                            .map(|t| t.to_string())
-                            .unwrap_or("end of input".into())
-                    ));
-                }
-            };
-            return Ok(vec![first, second]);
-        }
+    if let Some(TokenTree::Punct(p)) = iter.peek()
+        && p.as_char() == '.'
+    {
+        iter.next(); // consume '.'
+        let second = match iter.next() {
+            Some(TokenTree::Ident(id)) => id.to_string(),
+            other => {
+                return Err(format!(
+                    "expected sub-key identifier after '.', got: {}",
+                    other
+                        .map(|t| t.to_string())
+                        .unwrap_or("end of input".into())
+                ));
+            }
+        };
+        return Ok(vec![first, second]);
     }
 
     Ok(vec![first])
@@ -246,11 +244,7 @@ fn parse_override_path(
 
 /// Assigns an override value to the correct field in `KeyOverrides`,
 /// validating that the dotted path is a known built-in key path.
-fn assign_override(
-    ovr: &mut KeyOverrides,
-    path: &[String],
-    value: &str,
-) -> Result<(), String> {
+fn assign_override(ovr: &mut KeyOverrides, path: &[String], value: &str) -> Result<(), String> {
     match path.len() {
         1 => match path[0].as_str() {
             "Log" => {
@@ -336,7 +330,7 @@ pub fn parse_json_object(input: &TokenStream2) -> Result<JsonNode, String> {
     let mut iter = input.clone().into_iter().peekable();
     let node = parse_value(&mut iter)?;
     if iter.peek().is_some() {
-        return Err(format!("unexpected trailing tokens after JSON value"));
+        return Err("unexpected trailing tokens after JSON value".to_string());
     }
     match node {
         JsonNode::Object(_) => Ok(node),
@@ -379,7 +373,7 @@ fn parse_value(
             let next = iter.next().ok_or("expected literal after '-'")?;
             match next {
                 TokenTree::Literal(lit) => {
-                    let s = format!("-{}", lit);
+                    let s = format!("-{lit}");
                     parse_literal_str(&s)
                 }
                 other => Err(format!("expected literal after '-', got: {other}")),
@@ -409,24 +403,24 @@ fn parse_literal(lit: &Literal) -> Result<JsonNode, String> {
 
 fn parse_literal_str(s: &str) -> Result<JsonNode, String> {
     if s.starts_with('"') {
-        let parsed = unescape_json_string(&s)?;
+        let parsed = unescape_json_string(s)?;
         return Ok(JsonNode::Str(parsed));
     }
 
-    if let Some(stripped) = s.strip_suffix("i64") {
-        if let Ok(n) = stripped.parse::<i64>() {
-            return Ok(JsonNode::Number(Number::Int(n)));
-        }
+    if let Some(stripped) = s.strip_suffix("i64")
+        && let Ok(n) = stripped.parse::<i64>()
+    {
+        return Ok(JsonNode::Number(Number::Int(n)));
     }
-    if let Some(stripped) = s.strip_suffix("u64") {
-        if let Ok(n) = stripped.parse::<u64>() {
-            return Ok(JsonNode::Number(Number::Uint(n)));
-        }
+    if let Some(stripped) = s.strip_suffix("u64")
+        && let Ok(n) = stripped.parse::<u64>()
+    {
+        return Ok(JsonNode::Number(Number::Uint(n)));
     }
-    if let Some(stripped) = s.strip_suffix("f64") {
-        if let Ok(n) = stripped.parse::<f64>() {
-            return Ok(JsonNode::Number(Number::Float(n)));
-        }
+    if let Some(stripped) = s.strip_suffix("f64")
+        && let Ok(n) = stripped.parse::<f64>()
+    {
+        return Ok(JsonNode::Number(Number::Float(n)));
     }
     if let Ok(n) = s.parse::<u64>() {
         return Ok(JsonNode::Number(Number::Uint(n)));
@@ -724,9 +718,7 @@ mod tests {
 
     #[test]
     fn partial_overrides() {
-        let (ovr, _) = parse_full(
-            r#"[ Event.Id => "correlation_id" ], { "status": null }"#,
-        );
+        let (ovr, _) = parse_full(r#"[ Event.Id => "correlation_id" ], { "status": null }"#);
         assert!(ovr.event.key.is_none());
         assert_eq!(ovr.event.id.as_deref(), Some("correlation_id"));
         assert!(ovr.event.timestamp.is_none());
@@ -736,9 +728,7 @@ mod tests {
 
     #[test]
     fn top_level_only_override() {
-        let (ovr, _) = parse_full(
-            r#"[ Event => "an_event" ], { "status": null }"#,
-        );
+        let (ovr, _) = parse_full(r#"[ Event => "an_event" ], { "status": null }"#);
         assert_eq!(ovr.event.key.as_deref(), Some("an_event"));
         assert!(ovr.event.id.is_none());
         assert!(ovr.event.timestamp.is_none());
@@ -767,9 +757,7 @@ mod tests {
 
     #[test]
     fn err_duplicate_override() {
-        let err = parse_full_err(
-            r#"[ Event => "a", Event => "b" ], { "status": null }"#,
-        );
+        let err = parse_full_err(r#"[ Event => "a", Event => "b" ], { "status": null }"#);
         assert!(err.contains("duplicate override"));
     }
 

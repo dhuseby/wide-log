@@ -413,7 +413,7 @@ fn write_json_str<W: std::io::Write>(w: &mut W, s: &str) -> std::io::Result<()> 
             0x08 => w.write_all(b"\\b")?,
             0x0c => w.write_all(b"\\f")?,
             c if c < 0x20 => {
-                w.write_all(format!("\\u{:04x}", c).as_bytes())?;
+                w.write_all(format!("\\u{c:04x}").as_bytes())?;
             }
             c => w.write_all(&[c])?,
         }

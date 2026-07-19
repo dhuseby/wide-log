@@ -23,9 +23,9 @@
 //! [`flush`]: flush
 
 use std::io::Write;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::OnceLock;
 
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 static SENDER: OnceLock<Sender<Job>> = OnceLock::new();

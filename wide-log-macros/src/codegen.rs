@@ -1,7 +1,9 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::parse::{DurationOverride, EventOverride, JsonNode, KeyOverrides, LogOverride, Marker, Number};
+use crate::parse::{
+    DurationOverride, EventOverride, JsonNode, KeyOverrides, LogOverride, Marker, Number,
+};
 
 pub fn generate(
     root: JsonNode,
@@ -74,9 +76,20 @@ struct GenContext {
 
 impl GenContext {
     fn new(overrides: KeyOverrides) -> Self {
-        let LogOverride { key, level, message } = overrides.log;
-        let EventOverride { key: ev_key, id, timestamp } = overrides.event;
-        let DurationOverride { key: dur_key, total_ms } = overrides.duration;
+        let LogOverride {
+            key,
+            level,
+            message,
+        } = overrides.log;
+        let EventOverride {
+            key: ev_key,
+            id,
+            timestamp,
+        } = overrides.event;
+        let DurationOverride {
+            key: dur_key,
+            total_ms,
+        } = overrides.duration;
         Self {
             keys: Vec::new(),
             key_index: std::collections::BTreeMap::new(),
@@ -230,7 +243,7 @@ impl GenContext {
             JsonNode::Object(entries) => {
                 let duration_seg = self.builtin_duration.clone();
                 self.add_key(&duration_seg);
-                self.add_path(&[duration_seg.clone()]);
+                self.add_path(std::slice::from_ref(&duration_seg));
 
                 if entries.is_empty() {
                     self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
@@ -335,7 +348,7 @@ impl GenContext {
         self.add_key(&event_seg);
         self.add_key(&timestamp_seg);
         self.add_key(&id_seg);
-        self.add_path(&[event_seg.clone()]);
+        self.add_path(std::slice::from_ref(&event_seg));
         self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
         self.add_path(&[event_seg.clone(), id_seg.clone()]);
         self.timestamp_segments = vec![event_seg.clone(), timestamp_seg];
@@ -350,7 +363,7 @@ impl GenContext {
         match node {
             JsonNode::Object(entries) => {
                 self.add_key(&event_seg);
-                self.add_path(&[event_seg.clone()]);
+                self.add_path(std::slice::from_ref(&event_seg));
 
                 if entries.is_empty() {
                     self.add_event_subtree();
@@ -1010,7 +1023,7 @@ impl GenContext {
 
 fn to_pascal_case(name: &str) -> String {
     let mut result = String::new();
-    for word in name.split(|c| c == '_' || c == '.') {
+    for word in name.split(['_', '.']) {
         if word.is_empty() {
             continue;
         }

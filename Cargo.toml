@@ -1,8 +1,13 @@
+[workspace]
+members = [".", "wide-log-macros"]
+resolver = "2"
+
 [package]
 name = "wide-log"
 version = "0.5.2"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
+rust-version = "1.88"
 description = "A fast wide event logging crate a la loggingsucks.com"
 license = "Apache-2.0"
 readme = "README.md"
@@ -11,12 +16,13 @@ repository = "https://github.com/dhuseby/wide-log"
 [dependencies]
 chrono = "0.4"
 chrono-tz = "0.10"
-faststr = "0"
+faststr = "=0.2.34"
 itoa = "1"
 ryu = "1"
+rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
-smallvec = { version = "1", features = ["union", "write", "serde"] }
-sonic-rs = "0"
+smallvec = { version = "1", features = ["union", "serde"] }
+sonic-rs = "=0.5.8"
 thiserror = "2"
 ulid = "3"
 wide-log-macros = { version = "0.4.1", path = "wide-log-macros" }

@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn error_is_debug() {
         let e = Error::Serialize("y".into());
-        let s = format!("{:?}", e);
+        let s = format!("{e:?}");
         assert!(s.contains("Serialize"));
     }
 }

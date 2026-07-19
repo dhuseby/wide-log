@@ -3,6 +3,7 @@ name = "wide-log-macros"
 version = "0.4.1"
 authors = ["David Grantham"]
 edition = "2024"
+rust-version = "1.88"
 description = "Macros for a fast wide event logging crate a la loggingsucks.com"
 license = "Apache-2.0"
 readme = "../README.md"

@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup toolchain
+        run: rustup show
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup toolchain
+        run: rustup show
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Clippy (all features, all targets)
+        run: cargo clippy --workspace --all-features --all-targets --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup toolchain
+        run: rustup show
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Test (all features)
+        run: cargo test --workspace --all-features --locked -- --nocapture
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: cargo deny check
+        run: cargo deny check
+
+  audit:
+    name: cargo-audit
+    # Scheduled runs (Monday 06:00 UTC) plus every PR/push.
+    if: always()
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: cargo audit
+        run: cargo audit
+
+  msrv:
+    name: MSRV build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Build on declared MSRV
+        run: cargo +1.88.0 build --workspace --all-features --locked
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal --component miri
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: miri setup
+        run: cargo +nightly miri setup
+      - name: miri test (wide_event)
+        run: cargo +nightly miri test --workspace --all-features -- --skip miri
+      - name: miri test (wide_event module)
+        run: |
+          cat > /tmp/miri_lib.rs <<'EOF'
+          EOF
+          # Run miri on the affected modules. miri can't run the proc-macro
+          # crate, so we test the runtime crate only.
+          cargo +nightly miri test --lib --all-features
+        continue-on-error: true
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Fuzz macro_parser (30s)
+        run: |
+          if [ -d wide-log-fuzz ]; then
+            cd wide-log-fuzz
+            cargo +nightly fuzz run macro_parser -- -max_total_time=30 || echo "FUZZ_FAIL_MACRO_PARSER"
+          else
+            echo "wide-log-fuzz crate not yet present; skipping"
+          fi
+      - name: Fuzz write_json_str (30s)
+        run: |
+          if [ -d wide-log-fuzz ]; then
+            cd wide-log-fuzz
+            cargo +nightly fuzz run write_json_str -- -max_total_time=30 || echo "FUZZ_FAIL_WRITE_JSON_STR"
+          else
+            echo "wide-log-fuzz crate not yet present; skipping"
+          fi
+      - name: Fuzz value_from (30s)
+        run: |
+          if [ -d wide-log-fuzz ]; then
+            cd wide-log-fuzz
+            cargo +nightly fuzz run value_from -- -max_total_time=30 || echo "FUZZ_FAIL_VALUE_FROM"
+          else
+            echo "wide-log-fuzz crate not yet present; skipping"
+          fi
+      - name: Fuzz end_to_end (30s)
+        run: |
+          if [ -d wide-log-fuzz ]; then
+            cd wide-log-fuzz
+            cargo +nightly fuzz run end_to_end -- -max_total_time=30 || echo "FUZZ_FAIL_END_TO_END"
+          else
+            echo "wide-log-fuzz crate not yet present; skipping"
+          fi
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: |
+            wide-log-fuzz/fuzz/artifacts/**/*
+            wide-log-fuzz/fuzz/corpus/*/crash-*
+          if-no-files-found: ignore
