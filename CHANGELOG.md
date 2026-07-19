@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-07-19
+
+### Fixed
+- The macro-emitted thread-locals (`CURRENT_EVENT`, `EMIT_BUF`,
+  `FMT_BUF`, `ULID_BUF`) are now `pub` instead of `pub(crate)`.
+  0.6.1's `pub(crate)` worked for sibling modules of the lib
+  crate that invoked `wide_log!`, but NOT for binary crates
+  that depend on the lib — the binary is a separate crate and
+  `pub(crate)` doesn't cross crate boundaries. The downstream
+  crate `backup-quarterback` hit this on every format-arg
+  `info!`/`warn!`/etc. call from `src/main.rs` (the binary)
+  with `E0603: constant FMT_BUF is private`. The thread-locals
+  are intentionally not in a `pub` module — they are emitted
+  at the lib's crate root by the `wide_log!` proc-macro.
+  Making them `pub` exposes them to downstream crates that
+  import the lib, which is the intent (the format-arg macros
+  need to reach them via `$crate::FMT_BUF`). The names are
+  SCREAMING_SNAKE_CASE and the types are internal buffer
+  types, so the risk of accidental misuse is low.
+
 ## [0.6.1] - 2026-07-19
 
 ### Fixed
