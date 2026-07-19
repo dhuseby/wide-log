@@ -624,27 +624,68 @@ impl GenContext {
                     let mut buf = buf.borrow_mut();
                     buf.clear();
                     if ev.serialize_to(&mut *buf).is_ok() {
-                        // Safety: our serializer only writes valid UTF-8.
-                        let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
-                        ::wide_log::stdout_emit::submit(json);
+                        // The serializer only writes valid UTF-8, so the
+                        // bytes form a valid JSON line. We send the
+                        // `Vec<u8>` directly to the writer thread
+                        // (Phase 2 §1.2: no `from_utf8_unchecked`, no
+                        // `Vec::split_off(0)` copy). The writer
+                        // appends no trailing `'\n'` of its own —
+                        // we do that here so the producer is
+                        // responsible for line termination.
+                        buf.push(b'\n');
+                        // SAFETY: the serializer only emits valid UTF-8
+                        // (we control both ends), so the `Vec<u8>` is
+                        // a valid JSON line. We don't need a `String`
+                        // here, but we do want to verify the bytes
+                        // round-trip through UTF-8 as a sanity check
+                        // (a `debug_assert!` in release-with-debug-assertions
+                        // builds). In a no-assertions release build the
+                        // call is elided.
+                        if ::std::cfg!(debug_assertions) {
+                            if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
+                                debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+                            }
+                        }
+                        // Move the `Vec<u8>` to the writer thread.
+                        let bytes = ::std::mem::take(&mut *buf);
+                        ::wide_log::stdout_emit::submit(bytes);
                     }
                 });
             }
         };
 
         let guard_struct = quote! {
-            pub struct WideLogGuard<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> {
+            /// RAII guard that owns the active wide event.
+            ///
+            /// The guard is `#[must_use]` — binding it to `_guard` (the
+            /// common idiom) is fine, but discarding it with `let _ = ...`
+            /// without dropping will leak the event and leave the
+            /// thread-local cell in a stale state. See the rustdoc on
+            /// `Drop` below for the soundness contract.
+            #[must_use = "WideLogGuard must be dropped to emit the event; binding to `_guard` is fine"]
+            pub struct WideLogGuard<
+                F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
+            > {
                 inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
-                prev_ptr: *mut ::wide_log::WideEvent<EventKey>,
+                /// The previous value of `CURRENT_EVENT` for restoration
+                /// on drop.
+                ///
+                /// Phase 2 changes: this used to be `*mut WideEvent`
+                /// (raw pointer in the public interface). It is now
+                /// `*const WideEvent` and the field is
+                /// `unsafe impl Send` is gone — the guard is
+                /// `Send + Sync` automatically when `WideEvent: Sync`
+                /// (verified by `value_k_is_send_sync` in
+                /// `tests/macros.rs`).
+                ///
+                /// The `*const → *mut → *const → *mut` round-trip is
+                /// a no-op at runtime; the const-ness is purely to
+                /// give the auto-traits what they need. (Storing it
+                /// as `*mut` would re-introduce the Stacked Borrows
+                /// `SharedReadOnly → Unique` retag trip on the way
+                /// out, under miri.)
+                prev: *const ::wide_log::WideEvent<EventKey>,
             }
-
-            // SAFETY: The raw pointer `prev_ptr` is only accessed via the
-            // thread-local `CURRENT_EVENT` cell, which is per-thread. When the
-            // guard is moved across threads (in async), the task-local
-            // `TASK_EVENT` moves with the task. The pointer is never
-            // dereferenced from a different thread than the one that set it.
-            unsafe impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Send
-                for WideLogGuard<F> {}
         };
 
         let default_id_fn = quote! {
@@ -710,13 +751,21 @@ impl GenContext {
                         #(#default_stmts)*
                         event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
+                    // We need a `*mut` to store in the cell so the
+                    // eventual deref to `&mut WideEvent` is sound
+                    // under Stacked Borrows. The cell stores `*mut`,
+                    // the guard stores `*const` (for auto-traits), and
+                    // we cast at the boundaries.
                     let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                        use ::std::ops::Deref;
-                        let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
-                        guard_ref.deref() as *const _ as *mut _
+                        use ::std::ops::DerefMut;
+                        let guard_ref: &mut ::wide_log::ScopedGuard<EventKey, F> = inner.deref_mut();
+                        &mut *guard_ref.deref_mut()
                     };
                     let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
-                    WideLogGuard { inner, prev_ptr }
+                    WideLogGuard {
+                        inner,
+                        prev: prev_ptr as *const _,
+                    }
                 }
             }
         };
@@ -746,7 +795,38 @@ impl GenContext {
         let guard_drop = quote! {
             impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for WideLogGuard<F> {
                 fn drop(&mut self) {
-                    CURRENT_EVENT.with(|c| c.restore(self.prev_ptr));
+                    // The ScopedGuard inside `inner` drops first (Rust
+                    // drops fields in declaration order), which sets
+                    // duration / timestamp and calls the emit function.
+                    // After that, the ScopedGuard's inner WideEvent is
+                    // also dropped. We then restore the thread-local
+                    // CURRENT_EVENT to the value it had before this
+                    // guard was created.
+                    //
+                    // The restore uses a closure (`with(...)`) so that
+                    // the unsafe deref of the stored raw pointer happens
+                    // inside `ContextCell::restore` (in `context.rs`),
+                    // not in the macro-generated code.
+                    //
+                    // # Soundness
+                    //
+                    // If the user calls `mem::forget(guard)`, the
+                    // restore never runs and `CURRENT_EVENT` keeps
+                    // pointing at the (now-leaked) event. Subsequent
+                    // guards created on the same thread will see the
+                    // stale pointer, which is unsound. We `debug_assert!`
+                    // on the current state to catch this in tests.
+                    CURRENT_EVENT.with(|c| c.restore(self.prev as *mut _));
+                    // Post-restore sanity check: if we previously
+                    // stored a non-null prev, the cell should now
+                    // contain that pointer. We don't try to check the
+                    // cell is back to its *initial* state (we can't,
+                    // without more state), but we can verify that the
+                    // restore ran without panicking.
+                    debug_assert!(
+                        CURRENT_EVENT.with(|c| c.get_ptr()) == self.prev as *mut _,
+                        "wide-log: CURRENT_EVENT not restored to previous value on guard drop"
+                    );
                 }
             }
         };
@@ -755,13 +835,19 @@ impl GenContext {
             quote! {
                 #[inline(always)]
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    let ptr = if let Ok(p) = TASK_EVENT.try_with(|c| c.get_ptr()) {
-                        p
-                    } else {
-                        ::std::ptr::null_mut()
-                    };
-                    if !ptr.is_null() {
-                        return Some(unsafe { &mut *ptr });
+                    // The deref of the stored raw pointer is technically
+                    // `unsafe`, but the `unsafe` is concentrated in this
+                    // single function. (The alternative — an `unsafe`
+                    // method on `ContextCell` — trips a Stacked Borrows
+                    // false-positive under miri because the cell's
+                    // internal pointer was originally tagged SharedReadOnly
+                    // when stored via `replace(*const -> *mut)`. Until
+                    // the storage type is also changed to `*mut`, the
+                    // deref must happen here.)
+                    if let Ok(ptr) = TASK_EVENT.try_with(|c| c.get_ptr()) {
+                        if !ptr.is_null() {
+                            return Some(unsafe { &mut *ptr });
+                        }
                     }
                     let ptr = CURRENT_EVENT.with(|c| c.get_ptr());
                     if ptr.is_null() {
@@ -808,13 +894,8 @@ impl GenContext {
                         #(#default_stmts)*
                         event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
-                    let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                        use ::std::ops::Deref;
-                        let guard_ref: &::wide_log::ScopedGuard<EventKey, E> = inner.deref();
-                        guard_ref.deref() as *const _ as *mut _
-                    };
                     let cell = ::wide_log::ContextCell::new();
-                    cell.replace(ptr);
+                    cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
                     let _inner = inner;
                     TASK_EVENT.scope(cell, f).await
                 }

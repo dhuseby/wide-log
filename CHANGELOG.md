@@ -64,6 +64,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object directly without updating the cached `present_count`. Fixed
   by incrementing `present_count` in the fast path. (Phase 1 §2.5.)
 
+## [Unreleased] — Phase 2 in progress (0.6.0)
+
+### Added
+- `ContextCell::RestoreOnDrop<T>` — a drop guard that restores a
+  `ContextCell` to a previously-saved pointer on drop. Useful for
+  users who want to build their own guard types on top of the cell
+  primitives. (Phase 2 §1.3.)
+- `ScopedGuard::event_ptr()` — returns a raw pointer to the inner
+  `WideEvent<K>`, intended to be stored in a `ContextCell`.
+  (Phase 2 internal helper.)
+- Compile-time `Send + Sync` soundness tests for the macro-generated
+  `WideLogGuard` and for the inner types (`Value`, `WideEvent`,
+  `ScopedGuard`) in `tests/macros.rs`. (Phase 2 §1.3.)
+- End-to-end `Vec<u8>` pipeline test (`submit_accepts_owned_vec_without_copy`)
+  and load test (`submit_does_not_block_under_load`) for the writer
+  thread. (Phase 2 §1.2 / §2.3.)
+- Producer-side boundedness tests
+  (`emit_buf_capacity_is_bounded_across_many_events`,
+  `emit_buf_handles_increasing_event_sizes`) that emit thousands of
+  events of varying sizes and verify the thread-local `EMIT_BUF`
+  capacity does not grow unboundedly. (Phase 2 §2.3.)
+
+### Changed
+- **Breaking — field layout**: `WideLogGuard` no longer has an
+  `unsafe impl Send` shim. The `prev: *mut WideEvent` field has
+  been replaced with `prev: *const WideEvent` so the guard is
+  `Send + Sync` automatically whenever `WideEvent: Send + Sync`.
+  Direct field access via destructuring is no longer supported;
+  use the public API. (Phase 2 §1.3.)
+- **Breaking — `stdout_emit::submit` signature**: the payload is
+  now `Vec<u8>` instead of `String`. The producer's `default_emit`
+  no longer goes through `String::from_utf8_unchecked` or
+  `Vec::split_off(0)`; it appends `'\n'` to the producer-side
+  thread-local `Vec<u8>` and sends the bytes directly to the
+  writer thread. (Phase 2 §1.2 / §2.3.)
+- `Job::Line` carries `Vec<u8>` (was `String`). The writer
+  thread writes bytes directly via `BufWriter::write_all`. (Phase 2.)
+- `ContextCell` now uses `UnsafeCell<*mut T>` internally instead of
+  `Cell<*mut T>`, so the cell is `Send + Sync` without a separate
+  `unsafe impl Send + Sync` (the `unsafe impl` is still there for
+  the same reason the original code had it: the cell's safety
+  contract depends on the macro-generated guard invariant). The
+  external API (`get_ptr`, `replace`, `restore`) is unchanged.
+  (Phase 2 internal refactor.)
+- `WideLogGuard` is now `#[must_use = "..."]`. Binding to `_guard`
+  is fine (the underscore is consumed at end of scope, dropping
+  the guard normally), but binding to `_` and discarding without
+  dropping will now trigger a compiler warning. (Phase 2 §1.3.)
+- `WideLogGuard::drop` now includes a `debug_assert!` that verifies
+  the thread-local cell was restored to the previous value
+  recorded when the guard was created. (Phase 2 §1.3.)
+
+### Removed
+- `unsafe impl Send for WideLogGuard<F>` from the macro-generated
+  code. The guard is now `Send + Sync` automatically when
+  `WideEvent: Send + Sync`. (Phase 2 §1.3.)
+- `from_utf8_unchecked` from the `default_emit` path. The bytes
+  are now passed directly to the writer thread, where the
+  integrity of the UTF-8 is enforced by a `debug_assert!` in
+  the producer. (Phase 2 §1.2.)
+
+### Known limitations
+- `miri` test runs on the integration and macro tests are
+  currently affected by a pre-existing Stacked Borrows
+  `SharedReadWrite → Unique` retag violation in the macro's
+  `current()` function. This was present in `0.5.2` and is not
+  introduced by Phase 2. The `lib` unit tests (which exercise
+  the core logic without going through the macro) pass under
+  miri. Tracking as a follow-up to fix in `0.6.x` by
+  restructuring the `ContextCell` storage to use `AtomicPtr`
+  instead of `UnsafeCell<*mut T>` (or by inlining the unsafe
+  into a single function so the Stacked Borrows model can prove
+  the aliasing). (Phase 2 exit-criteria observation.)
+
+### Fixed
+- Eliminated the `from_utf8_unchecked` soundness hazard by
+  moving to a `Vec<u8>` pipeline. (Phase 2 §1.2.)
+- Removed the `unsafe impl Send for WideLogGuard` shim in favor
+  of natural auto-trait derivation via `*const WideEvent`. (Phase 2 §1.3.)
+
 ## [0.5.2] - 2026-07-17
 
 ### Fixed

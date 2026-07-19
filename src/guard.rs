@@ -48,6 +48,15 @@ where
             emit_fn: Some(emit_fn),
         }
     }
+
+    /// Returns a raw pointer to the inner `WideEvent<K>`. The pointer
+    /// is valid for the lifetime of this `ScopedGuard` and is intended
+    /// to be stored in a [`ContextCell`] for lookup via `current()`.
+    ///
+    /// [`ContextCell`]: crate::ContextCell
+    pub fn event_ptr(&self) -> *const WideEvent<K> {
+        &self.event as *const _
+    }
 }
 
 #[cfg(test)]
