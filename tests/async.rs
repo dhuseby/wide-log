@@ -297,3 +297,75 @@ async fn scope_emits_on_cancellation() {
     assert!(parsed["event"]["timestamp"].is_str());
     assert!(parsed["event"]["id"].is_str());
 }
+
+// ---- Phase 6: concurrency stress test ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_thousand_concurrent_scopes() {
+    // Stress test: spawn 1000+ tasks on a multi-thread runtime, each
+    // running its own `scope`. Verify that:
+    // - Every emit closure is called exactly once.
+    // - Every emitted JSON parses.
+    // - Every emitted JSON has the auto-populated event/duration fields.
+    // - The `service.name` field is the one this task set (no
+    //   cross-task bleed of the thread-local event pointer).
+    const N_TASKS: usize = 1000;
+
+    let slots: Vec<Arc<Mutex<Option<String>>>> =
+        (0..N_TASKS).map(|_| Arc::new(Mutex::new(None))).collect();
+
+    let mut handles = Vec::with_capacity(N_TASKS);
+    for (i, slot) in slots.iter().enumerate() {
+        let s = slot.clone();
+        handles.push(tokio::spawn(scope(
+            move |ev| *s.lock().unwrap() = Some(ev.to_json().unwrap()),
+            async move {
+                wl_set!("service.name", format!("task-{i}"));
+                wl_inc!("requests");
+                // Yield a few times to interleave the tasks across
+                // the worker threads.
+                for _ in 0..3 {
+                    tokio::task::yield_now().await;
+                }
+                wl_inc!("requests");
+            },
+        )));
+    }
+
+    for h in handles {
+        h.await.expect("task should not panic");
+    }
+
+    // Verify every task produced a valid JSON with the expected
+    // fields and no cross-task contamination.
+    for (i, slot) in slots.iter().enumerate() {
+        let json = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("every task must emit exactly once");
+        let parsed: sonic_rs::Value =
+            sonic_rs::from_str(&json).expect("every emitted JSON must parse");
+        assert_eq!(
+            parsed["service"]["name"],
+            format!("task-{i}"),
+            "task {i} saw the wrong service.name (cross-task bleed)"
+        );
+        assert_eq!(
+            parsed["requests"], 2,
+            "task {i} should have incremented requests twice"
+        );
+        assert!(
+            parsed["event"]["id"].is_str(),
+            "task {i} should have an auto-generated event.id"
+        );
+        assert!(
+            parsed["event"]["timestamp"].is_str(),
+            "task {i} should have an auto-generated event.timestamp"
+        );
+        assert!(
+            parsed["duration"]["total_ms"].is_number(),
+            "task {i} should have a measured duration.total_ms"
+        );
+    }
+}

@@ -498,7 +498,17 @@ mod tests {
         // per_line means each submit triggers a flush, so the
         // explicit flush() should be effectively a no-op and
         // return very quickly.
-        assert!(start.elapsed() < Duration::from_millis(100));
+        //
+        // The timing assertion is a *sanity check* on the
+        // performance of the writer thread, not a correctness
+        // property. Under miri (which interprets every
+        // instruction rather than executing real syscalls), the
+        // writer thread takes a long time to drain the channel
+        // even for a single line, so the timing threshold is
+        // not meaningful. Skip the assertion under miri.
+        if !cfg!(miri) {
+            assert!(start.elapsed() < Duration::from_millis(100));
+        }
     }
 
     // ── §FlushPolicy: policy change applies to future events only ──
@@ -522,7 +532,15 @@ mod tests {
         flush();
         // per_line flushes after every submit, so the explicit
         // flush() should be effectively a no-op.
-        assert!(start.elapsed() < Duration::from_millis(50));
+        //
+        // As above, the timing assertion is a sanity check on
+        // the writer thread's performance, not a correctness
+        // property. Under miri the writer thread takes a long
+        // time to drain the channel even for a single line, so
+        // the threshold is not meaningful. Skip under miri.
+        if !cfg!(miri) {
+            assert!(start.elapsed() < Duration::from_millis(50));
+        }
     }
 
     // ── §FlushPolicy: writer thread startup and shutdown ──

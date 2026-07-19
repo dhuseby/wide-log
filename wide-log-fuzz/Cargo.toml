@@ -1,0 +1,12 @@
+[workspace]
+members = ["fuzz"]
+resolver = "2"
+
+# The `wide-log-fuzz` crate is a separate workspace so it can build
+# with `cargo +nightly fuzz` (which uses libfuzzer-sys, a nightly
+# dep) without polluting the main `wide-log` workspace, which is
+# built and tested on stable + MSRV 1.88.
+#
+# The main workspace at the parent directory has this crate listed
+# in `exclude = ["wide-log-fuzz"]` so it does not try to descend
+# into it.

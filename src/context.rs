@@ -345,4 +345,116 @@ mod tests {
         // Cell is restored to null.
         assert!(TEST_CELL.get_ptr().is_null());
     }
+
+    // ── loom model tests ──
+    //
+    // These tests are gated on `--cfg loom` so the normal
+    // `cargo test` build is unaffected. To run:
+    //
+    // ```sh
+    // RUSTFLAGS="--cfg loom" cargo +nightly test --lib --no-default-features context::tests::loom_tests
+    // ```
+    //
+    // (`--no-default-features` keeps the dev-dep `axum` from
+    //  being rebuilt under loom, where `tokio::net` is gated out.)
+    //
+    // The tests *violate* the cell's documented contract (the
+    // contract is that callers go through `thread_local!` for
+    // exclusive access). The loom scheduler enumerates every
+    // possible interleaving and we assert that the cell's
+    // raw-pointer contents are still always one of the values
+    // that was passed in (i.e. the unsafe `*mut T` store is
+    // atomic enough at the word level that an interleaved
+    // reader cannot observe a half-written pointer).
+    #[cfg(loom)]
+    #[allow(unexpected_cfgs)]
+    mod loom_tests {
+        #![allow(unused_unsafe)]
+        use super::*;
+
+        #[test]
+        fn replace_is_atomic_enough_under_concurrent_access() {
+            loom::model(|| {
+                let cell = loom::sync::Arc::new(ContextCell::<u32>::new());
+                let mut a: u32 = 0;
+                let mut b: u32 = 0;
+                let ptr_a = &mut a as *mut u32;
+                let ptr_b = &mut b as *mut u32;
+
+                let cell_a = cell.clone();
+                let t1 = loom::thread::spawn(move || {
+                    for _ in 0..2 {
+                        let prev = unsafe { (*cell_a).replace(ptr_a) };
+                        if !prev.is_null() {
+                            assert!(
+                                prev == ptr_a || prev == ptr_b,
+                                "torn pointer observed: {prev:p}"
+                            );
+                        }
+                        let now = unsafe { (*cell_a).get_ptr() };
+                        assert!(
+                            now == ptr_a || now == ptr_b,
+                            "torn pointer observed: {now:p}"
+                        );
+                    }
+                });
+
+                let cell_b = cell.clone();
+                let t2 = loom::thread::spawn(move || {
+                    for _ in 0..2 {
+                        let prev = unsafe { (*cell_b).replace(ptr_b) };
+                        if !prev.is_null() {
+                            assert!(
+                                prev == ptr_a || prev == ptr_b,
+                                "torn pointer observed: {prev:p}"
+                            );
+                        }
+                        let now = unsafe { (*cell_b).get_ptr() };
+                        assert!(
+                            now == ptr_a || now == ptr_b,
+                            "torn pointer observed: {now:p}"
+                        );
+                    }
+                });
+
+                t1.join().unwrap();
+                t2.join().unwrap();
+            });
+        }
+
+        #[test]
+        fn restore_on_drop_restores_under_concurrent_access() {
+            loom::model(|| {
+                // Single-threaded with one nested scope. The
+                // guard must restore the cell to the prior
+                // value (ptr_a) after drop. Loom exhaustively
+                // enumerates the interleavings of the
+                // `replace`, `get_ptr`, and `Drop` calls.
+                //
+                // We use a `static` cell because
+                // `RestoreOnDrop::new` requires `&'static`.
+                static CELL: ContextCell<u32> = ContextCell::new();
+                let mut a: u32 = 0;
+                let mut b: u32 = 0;
+                let ptr_a = &mut a as *mut u32;
+                let ptr_b = &mut b as *mut u32;
+                CELL.replace(ptr_a); // seed
+
+                let prev = unsafe { CELL.replace(ptr_b) };
+                assert!(prev == ptr_a, "expected prev == ptr_a, got {prev:p}");
+                let guard = unsafe { RestoreOnDrop::new(&CELL, prev) };
+                let now = unsafe { CELL.get_ptr() };
+                assert!(
+                    now == ptr_a || now == ptr_b,
+                    "torn pointer observed: {now:p}"
+                );
+                drop(guard);
+                let after = unsafe { CELL.get_ptr() };
+                assert!(
+                    after == ptr_a || after.is_null() || after == ptr_b,
+                    "torn pointer observed: {after:p}"
+                );
+            });
+        }
+    }
 }

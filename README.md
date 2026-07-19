@@ -521,13 +521,29 @@ according to a `FlushPolicy`:
 | `max_bytes`     | 8 KiB   | Flush when 8 KiB are buffered                      |
 | `max_lines`     | 1000    | Flush after 1000 lines                             |
 
-The default policy achieves a 10× reduction in `write`/`flush`
-syscalls at 10k events/s. The tradeoff is a small **durability
-window**: if the process is killed between when a line is
-submitted and when the next batched flush fires, that line is
-lost. The maximum loss is bounded by `max_interval` (100 ms by
-default) of buffered output, plus any bytes the kernel hasn't
-yet flushed to the pipe.
+The default policy achieves a **3.4–7× throughput improvement**
+over per-line flushing on typical wide-log events (measured on
+`/dev/null`, 100k lines per iteration, see `benches/writer.rs`):
+
+| Line size | per_line      | default_batched | Speedup  |
+|-----------|---------------|-----------------|----------|
+| 32 B      | 7.7 Melem/s   | 53.6 Melem/s    | **7.0×** |
+| 256 B     | 7.8 Melem/s   | 42.6 Melem/s    | **5.4×** |
+| 1024 B    | 7.5 Melem/s   | 25.5 Melem/s    | **3.4×** |
+
+The speedup decreases as line size grows because the
+`write_all` to `BufWriter` starts to dominate the per-line
+`flush` syscall. The actual `write`/`flush` syscall reduction
+(which the benchmark doesn't measure directly) is likely higher,
+because `/dev/null` swallows writes after the kernel buffer and
+the real bottleneck on a `pipe` (stdout) is the kernel waking up
+the reader.
+
+The tradeoff is a small **durability window**: if the process is
+killed between when a line is submitted and when the next batched
+flush fires, that line is lost. The maximum loss is bounded by
+`max_interval` (100 ms by default) of buffered output, plus any
+bytes the kernel hasn't yet flushed to the pipe.
 
 For maximum durability, call `set_flush_policy` with
 `FlushPolicy::per_line()` (the pre-Phase-4 behavior):
@@ -547,10 +563,37 @@ no-op (the first call wins). The policy must be set before any
 `submit()` call to take effect on the writer thread; subsequent
 `set_flush_policy` calls have no effect on the running writer.
 
+### Inspecting the current policy
+
+```rust
+let p = wide_log::stdout_emit::current_flush_policy();
+println!("max_interval = {:?}", p.max_interval);
+println!("max_bytes = {}", p.max_bytes);
+println!("max_lines = {}", p.max_lines);
+```
+
+This returns `FlushPolicy::default()` (100 ms / 8 KiB / 1000
+lines) if `set_flush_policy` was never called.
+
 ## Features
 
 - `tokio` — enables async support: `scope()`, `scope_default()`,
   `WideLogLayer` tower middleware, and `tokio::task_local!` storage.
 - `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
   generation instead of the default ULID.
+- `tracing` — *transition aid only*. When enabled, the
+  macro-generated `default_emit` routes the serialized event through
+  `::tracing::info!(event = %json)` instead of writing the bare
+  JSON line to non-blocking stdout. A one-time `eprintln!` warning
+  is emitted on first use. New code should disable this feature
+  and use the default (bare JSON to stdout) or a custom
+  `with_emit` closure. See `MIGRATING.md` for the full
+  `tracing → wide-log` mapping.
+
+## Migrating from `tracing`
+
+See [MIGRATING.md](./MIGRATING.md) for a complete
+`tracing → wide_log` mapping table (every concept, with code
+snippets), plus a checklist for porting an existing
+`tracing`-based service.
 

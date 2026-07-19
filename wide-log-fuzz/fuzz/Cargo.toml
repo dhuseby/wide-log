@@ -1,0 +1,46 @@
+[package]
+name = "wide-log-fuzz-harness"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sonic-rs = "0.5"
+faststr = "0.2"
+wide-log = { path = "../.." }
+wide-log-macros = { path = "../../wide-log-macros" }
+
+# Note: a `macro_parser` target was planned in Phase 6 §6.2 to fuzz
+# the `wide_log!` macro input parser directly. It was dropped
+# because `wide-log-macros` is a `proc-macro` crate and rustc
+# forbids exporting any items other than `#[proc_macro]` functions,
+# so the parser is not reachable from a separate fuzz crate without
+# splitting the macros crate into an `rlib` + a thin proc-macro
+# wrapper. The remaining three targets cover the JSON serializer,
+# the `Value::from_*` conversions, and the end-to-end guard+emit
+# path — see `CHANGELOG.md` Phase 6 "Known limitations".
+
+[[bin]]
+name = "write_json_str"
+path = "fuzz_targets/write_json_str.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "value_from"
+path = "fuzz_targets/value_from.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "end_to_end"
+path = "fuzz_targets/end_to_end.rs"
+test = false
+doc = false
+bench = false

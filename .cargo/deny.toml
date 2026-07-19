@@ -43,11 +43,18 @@ license-files = [
 
 [bans]
 # Don't allow known-bad crates; we only ban a small handful here.
+# `multiple-versions = "warn"` catches transitive dep conflicts;
+# we silence two specific ones that are inherent to our pinned
+# `sonic-rs = "=0.5.8"` (which uses `ahash 0.8` → `getrandom 0.3`)
+# and `ulid 3` (which uses `rand 0.10` → `getrandom 0.4`).
+# Unifying them would require either changing `sonic-rs` or
+# switching to a different ULID library, both of which are
+# out of scope for 0.6.0.
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 deny = []
-skip = []
+skip = ["getrandom", "r-efi"]
 skip-tree = []
 
 [sources]

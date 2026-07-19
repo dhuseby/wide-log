@@ -10,6 +10,7 @@ pub fn generate(
     overrides: KeyOverrides,
     tokio: bool,
     uuid: bool,
+    tracing: bool,
 ) -> Result<TokenStream2, syn::Error> {
     let mut ctx = GenContext::new(overrides);
     ctx.walk(&root, &[])?;
@@ -19,7 +20,7 @@ pub fn generate(
 
     ctx.validate()?;
 
-    Ok(ctx.emit(tokio, uuid))
+    Ok(ctx.emit(tokio, uuid, tracing))
 }
 
 #[derive(Clone, Debug)]
@@ -450,7 +451,7 @@ impl GenContext {
         Ok(())
     }
 
-    fn emit(&self, tokio: bool, uuid: bool) -> TokenStream2 {
+    fn emit(&self, tokio: bool, uuid: bool, tracing: bool) -> TokenStream2 {
         let enum_variants: Vec<syn::Ident> = self
             .keys
             .iter()
@@ -620,39 +621,93 @@ impl GenContext {
             }
         };
 
-        let default_emit = quote! {
-            fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
-                EMIT_BUF.with(|buf| {
-                    let mut buf = buf.borrow_mut();
-                    buf.clear();
-                    if ev.serialize_to(&mut *buf).is_ok() {
-                        // The serializer only writes valid UTF-8, so the
-                        // bytes form a valid JSON line. We send the
-                        // `Vec<u8>` directly to the writer thread
-                        // (Phase 2 §1.2: no `from_utf8_unchecked`, no
-                        // `Vec::split_off(0)` copy). The writer
-                        // appends no trailing `'\n'` of its own —
-                        // we do that here so the producer is
-                        // responsible for line termination.
-                        buf.push(b'\n');
-                        // SAFETY: the serializer only emits valid UTF-8
-                        // (we control both ends), so the `Vec<u8>` is
-                        // a valid JSON line. We don't need a `String`
-                        // here, but we do want to verify the bytes
-                        // round-trip through UTF-8 as a sanity check
-                        // (a `debug_assert!` in release-with-debug-assertions
-                        // builds). In a no-assertions release build the
-                        // call is elided.
-                        if ::std::cfg!(debug_assertions) {
-                            if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
-                                debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+        let default_emit = if tracing {
+            // The `tracing` feature is enabled on the macros crate:
+            // route the serialized event through `::tracing::info!`
+            // (which the user crate must have in scope via a
+            // tracing-subscriber init). A one-time `eprintln!` warning
+            // is emitted to remind the user that this is a
+            // transition aid, not the default. The actual JSON
+            // payload is the value of the `event=` field on a
+            // tracing info record; subscribers format the surrounding
+            // envelope (timestamp, level, target) themselves.
+            quote! {
+                fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
+                    use ::std::sync::atomic::{AtomicBool, Ordering};
+                    static WARNED: AtomicBool = AtomicBool::new(false);
+                    if !WARNED.swap(true, Ordering::Relaxed) {
+                        ::std::eprintln!(
+                            "wide-log: emitting via `::tracing::info!` because the `tracing` \
+                             feature is enabled. This is a transition aid for migrating from \
+                             `tracing::info!` to `wide_log!`; new code should disable the \
+                             `tracing` feature and use the default (bare JSON to stdout) \
+                             or a custom `with_emit` closure."
+                        );
+                    }
+                    EMIT_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        if ev.serialize_to(&mut *buf).is_ok() {
+                            buf.push(b'\n');
+                            if ::std::cfg!(debug_assertions) {
+                                if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
+                                    debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+                                }
+                            }
+                            let bytes = ::std::mem::take(&mut *buf);
+                            // Convert to a String for the tracing
+                            // payload. The JSON is small (one event)
+                            // so a String allocation is acceptable
+                            // on the emit path.
+                            if let Ok(s) = ::std::string::String::from_utf8(bytes) {
+                                // Use the fully-qualified path so the
+                                // call resolves to the user's
+                                // `tracing` crate, not a hypothetical
+                                // `wide_log!`-generated macro.
+                                let s = s.trim_end_matches('\n');
+                                ::tracing::info!(event = %s);
                             }
                         }
-                        // Move the `Vec<u8>` to the writer thread.
-                        let bytes = ::std::mem::take(&mut *buf);
-                        ::wide_log::stdout_emit::submit(bytes);
-                    }
-                });
+                    });
+                }
+            }
+        } else {
+            // Default: write the bare JSON line to non-blocking
+            // stdout via the writer thread.
+            quote! {
+                fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
+                    EMIT_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        if ev.serialize_to(&mut *buf).is_ok() {
+                            // The serializer only writes valid UTF-8, so the
+                            // bytes form a valid JSON line. We send the
+                            // `Vec<u8>` directly to the writer thread
+                            // (Phase 2 §1.2: no `from_utf8_unchecked`, no
+                            // `Vec::split_off(0)` copy). The writer
+                            // appends no trailing `'\n'` of its own —
+                            // we do that here so the producer is
+                            // responsible for line termination.
+                            buf.push(b'\n');
+                            // SAFETY: the serializer only emits valid UTF-8
+                            // (we control both ends), so the `Vec<u8>` is
+                            // a valid JSON line. We don't need a `String`
+                            // here, but we do want to verify the bytes
+                            // round-trip through UTF-8 as a sanity check
+                            // (a `debug_assert!` in release-with-debug-assertions
+                            // builds). In a no-assertions release build the
+                            // call is elided.
+                            if ::std::cfg!(debug_assertions) {
+                                if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
+                                    debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+                                }
+                            }
+                            // Move the `Vec<u8>` to the writer thread.
+                            let bytes = ::std::mem::take(&mut *buf);
+                            ::wide_log::stdout_emit::submit(bytes);
+                        }
+                    });
+                }
             }
         };
 
@@ -812,6 +867,44 @@ impl GenContext {
 
         let guard_drop = quote! {
             impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for WideLogGuard<F> {
+                /// Restore the thread-local `CURRENT_EVENT` cell to the
+                /// value it had before this guard was created.
+                ///
+                /// Field-drop order: `inner` (the `Box<ScopedGuard>`)
+                /// drops first, which sets the `duration.total_ms`,
+                /// the `event.timestamp`, and invokes the user's emit
+                /// closure. After that, this `Drop` body runs and
+                /// restores `CURRENT_EVENT` to `self.prev`.
+                ///
+                /// # `mem::forget` is **unsound** on this type
+                ///
+                /// The restore in this `Drop` body is the **only**
+                /// thing that resets the thread-local cell. If the
+                /// user calls [`std::mem::forget`] on the guard, this
+                /// `Drop` body never runs and `CURRENT_EVENT` keeps
+                /// pointing at the now-leaked event. Any subsequent
+                /// guard created on the same thread will see the
+                /// stale pointer and will be unsound.
+                ///
+                /// This is why the guard is `#[must_use]` — the
+                /// common error of writing `let _ = guard;` instead
+                /// of `let _guard = guard;` is caught at compile
+                /// time. Calling `mem::forget(guard)` is the only way
+                /// to bypass this check, and it is a documented
+                /// unsoundness (see `wide_log::RestoreOnDrop` for the
+                /// recommended pattern if you need to temporarily
+                /// disarm a guard).
+                ///
+                /// [Phase 2] refactored the storage from a raw
+                /// `*mut WideEvent` field to a `Box<ScopedGuard>` +
+                /// raw `*const WideEvent` (for the previous-pointer
+                /// value), so the auto-derived `Send + Sync` is
+                /// sound and the unsafe is concentrated in this
+                /// single function. The `mem::forget` soundness
+                /// hole is **unchanged** by Phase 2; it is a
+                /// pre-existing limitation of the guard pattern.
+                ///
+                /// [Phase 2]: https://github.com/dhuseby/wide-log/blob/main/CHANGELOG.md
                 fn drop(&mut self) {
                     // The ScopedGuard inside `inner` drops first (Rust
                     // drops fields in declaration order), which sets

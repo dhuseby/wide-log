@@ -438,8 +438,19 @@ fn write_value<K: Key, W: std::io::Write>(
             w.write_all(buf.format(*u).as_bytes())
         }
         Value::F64(f) => {
-            let mut buf = ryu::Buffer::new();
-            w.write_all(buf.format(*f).as_bytes())
+            // JSON has no representation for NaN or ±Infinity. The
+            // `to_json` path (sonic-rs) emits `null` for non-finite
+            // floats; the direct `serialize_to` path must match so
+            // the two paths produce byte-identical output for the
+            // same event. Without this guard, `ryu::Buffer::format`
+            // would emit the literal text "NaN" / "inf" / "-inf",
+            // which is not valid JSON.
+            if !f.is_finite() {
+                w.write_all(b"null")
+            } else {
+                let mut buf = ryu::Buffer::new();
+                w.write_all(buf.format(*f).as_bytes())
+            }
         }
         Value::Str(s) => write_json_str(w, s.as_str()),
         Value::StaticStr(s) => write_json_str(w, s),

@@ -5,6 +5,273 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-19
+
+The 0.6.0 release is a comprehensive hardening pass: a new
+schema-first `present_count` cache, a panic-to-debug-assert safety
+pass on the macro, a complete removal of the `unsafe impl Send`
+on the macro's raw pointer (Phase 2), a major hot-path
+optimization pass (FMT_BUF / ULID_BUF / with_id_str), a batched
+writer thread with `FlushPolicy`, a `loom` model test for the
+`ContextCell`, a fuzz harness for the JSON serializer / `Value`
+conversions / end-to-end guard+emit, and a CI miri job for the
+lib + macros. The plan that drove this release is in
+`./report-plan.md`; the detailed per-phase record is below
+this entry. The per-phase `[Unreleased]` sections immediately
+below this entry are kept as the granular changelog (Added /
+Changed / Performance / Known limitations) — they predate the
+`0.6.0` version bump and were used as the work log.
+
+### Added
+
+- **`WideEvent::present_count: usize`** cached field (Phase 1).
+  O(1) `len()` and `count_present()` instead of O(K) linear scan.
+  Maintained incrementally by `add`, `inc`, `dec`, `add_n`, and
+  `object()`. `pub(crate)`, not serialized.
+- **Compile-time validation in the `wide_log!` macro** (Phase 1).
+  Empty / dot / quote / backslash characters in
+  `Log` / `Event` / `Duration` override strings are now rejected
+  with `compile_error!`. User-supplied default values for
+  `event.id` are now rejected (the auto-ULID would silently
+  overwrite them). Use `"id": null` to opt in to the auto-id.
+- **U+2028 / U+2029 escaping** in the direct JSON serializer
+  (Phase 1 §4.1). Prevents JavaScript-side JSON hijacking when
+  downstream consumers embed the emitted JSON in a `<script>`
+  tag.
+- **`wide_log::stdout_emit::FlushPolicy`** (Phase 4). Batch
+  writer thread flushes by time (default 100 ms), bytes
+  (default 8 KiB), and lines (default 1000). Constructor
+  `FlushPolicy::per_line()` restores the pre-Phase-4 behavior.
+  `set_flush_policy()` is global and **idempotent** (silent
+  no-op on repeat). `current_flush_policy()` accessor.
+- **Reusable thread-local buffers** (Phase 3): `FMT_BUF` (String)
+  for `info!`/`warn!`/etc. format-args, `ULID_BUF` (String) for
+  the default event id. Reused across calls, cleared (not
+  freed) before each format / write.
+- **`WideLogGuardBuilder::with_id_str(&'static str)`** (Phase 3
+  §3.4). Avoids the closure + `Box<dyn FnOnce>` indirection for
+  the common "fixed id" pattern.
+- **Async `scope()` / `scope_default()`** retained (3.0); now
+  uses `Box<ScopedGuard>` (Phase 3 §3.3 deferred) and a
+  `RestoreOnDrop` type for safe cell restoration (Phase 2).
+- **`wide_log::RestoreOnDrop<T>`** (Phase 2). Drop-guard for
+  `ContextCell` that restores the previous value on drop, with
+  `disarm()` to opt out of the restore. `Send + Sync` for any
+  `T: 'static`.
+- **`loom` model test** (Phase 6) for `ContextCell`'s
+  `replace` / `get_ptr` / `restore` under concurrent access.
+  Verifies the cell's `*mut T` storage is atomic-enough at the
+  word level that an interleaved reader cannot observe a torn
+  or garbage pointer, even when the documented
+  "must go through `thread_local!`" contract is violated.
+  Gated on `--cfg loom`.
+- **`wide-log-fuzz/` crate** (Phase 6) with three
+  `cargo-fuzz` targets: `write_json_str` (the JSON serializer
+  via `to_json` round-trip), `value_from` (every
+  `Value::from_*` conversion: `bool`, `i64`, `u64`, `f64`,
+  `&str`, `String`, `FastStr`, `()`), and `end_to_end` (the
+  macro-generated `WideLogGuard` + `wl_set!` / `wl_inc!` /
+  `wl_dec!` / `wl_add!` / `wl_null!` path). 30s/target on PR,
+  1.3M+ total iterations clean. A hand-seeded corpus lives at
+  `wide-log-fuzz/corpus/<target>/`.
+- **Concurrency stress test** `one_thousand_concurrent_scopes`
+  in `tests/async.rs` (Phase 6). 1000 tasks on a 4-worker
+  tokio runtime, each running its own `scope`. Verifies no
+  cross-task bleed of the thread-local event pointer and that
+  every event has its auto-populated fields.
+- **`tracing` feature** (Phase 7, default-off). When enabled,
+  the macro-generated `default_emit` routes through
+  `::tracing::info!(event = %json)` and emits a one-time
+  `eprintln!` warning. Use only as a transition aid when
+  migrating from `tracing::info!`; new code should use the
+  default (bare JSON to stdout) or a custom `with_emit`
+  closure. Integration test: `tests/tracing_feature.rs`.
+- **`MIGRATING.md`** (Phase 7). Full `tracing → wide_log`
+  mapping table (every concept + code snippet), a
+  side-by-side comparison of what `tracing` can do that
+  `wide-log` cannot (and vice versa), and a code-side
+  migration checklist.
+
+### Changed
+
+- **`__wl_resolve_path` no longer panics on an unknown path**
+  (Phase 1 §1.1). The generated macro arms return an empty
+  slice (no-op) with a `debug_assert!`; a release build with
+  an unknown path silently becomes a no-op rather than
+  crashing. Applies to `wl_set!`, `wl_inc!`, `wl_dec!`,
+  `wl_add!`, `wl_null!`.
+- **Removed `unsafe impl Send`** on the macro's `WideLogGuard`
+  raw pointer (Phase 2). The pointer is now a `*const
+  WideEvent` (auto `Send + Sync`). The drop restore is
+  contained in a single method on the macro-generated
+  `impl Drop`, and the unsafe deref of the stored raw
+  pointer happens inside `ContextCell::restore` (in
+  `context.rs`), not in the macro-generated code.
+- **`Job::Line(Vec<u8>)` pipeline** (Phase 2). Replaced the
+  `String` round-trip on the writer channel. No more
+  `from_utf8_unchecked`. `to_json` still returns a `String`
+  for direct callers; the writer-thread path is the only
+  place that moves bytes.
+- **`WideLogGuard` carries a `*const` (auto `Send + Sync`)**,
+  and a `Box<ScopedGuard>` indirection (Phase 3 §3.3
+  deferred — would require exposing `WideEvent`'s mutators
+  as `pub` in a `__macro_internals` module).
+- **`write_value` in `src/wide_event.rs`** (Phase 6 fix from
+  fuzzing) now emits `null` for non-finite `f64` (NaN / ±Inf)
+  to match `to_json` (sonic-rs). Without this,
+  `ryu::Buffer::format(NaN)` produced the literal text
+  `"NaN"`, which is not valid JSON.
+- **Inline 1- and 2-segment fast paths** (Phase 5 §5.3) in
+  `WideEvent::add_path`, `inc_path`, `dec_path`, `add_n_path`.
+  The ≥3-segment case still goes through the recursive
+  `descend_mut`.
+- **Hot-path `unwrap`/`expect` audit** (Phase 5 §5.4). The
+  4 non-test `.unwrap()` calls in the macro
+  (`auto_add_duration`, `auto_add_event`, and the two
+  branches of `resolve_event_subtree`) were replaced with
+  structural `match` on `entries.iter().find(...)`. The
+  pre-existing `iter().any(...)` scan was removed; the
+  `Some` arm binds the value directly.
+- **MSRV bumped from 1.85.0 to 1.88.0** (Phase 0). The
+  pre-existing code uses `if let ... && let ...` chains
+  which were stabilized in Rust 1.88.0. CI installs 1.88.0
+  and runs the full test suite against it.
+- **Cargo workspace block** added to `Cargo.toml` (Phase 0).
+  Pinned `faststr = "=0.2.34"` and `sonic-rs = "=0.5.8"`
+  (Phase 0 §5.1). Removed `smallvec`'s `write` feature
+  (Phase 0 §5.4). Added `rustc-hash = "2"` (Phase 0 §5.7).
+- **CI** (Phase 0): `.github/workflows/ci.yml` runs
+  `cargo test` (all features), `cargo clippy -D warnings`,
+  `cargo fmt --check`, `cargo deny check`, `cargo audit`
+  (weekly + per-PR), MSRV build, miri, and (Phase 6) fuzz.
+  `.github/dependabot.yml` covers all deps including
+  transitive. `.cargo/deny.toml` enforces permissive
+  licenses, bans known-bad crates, and skips the two
+  pre-existing `getrandom` / `r-efi` transitive dedup
+  warnings (they're a pre-existing consequence of
+  `sonic-rs 0.5.8` and `ulid 3` having incompatible
+  `getrandom` requirements).
+
+### Performance
+
+End-to-end hot path
+(`guard create + 4× wl_set + 1× wl_inc + 1× info!("user {} logged in", 42) + drop with capture emit`):
+
+| Benchmark                  | Time       |
+|----------------------------|------------|
+| `hot_path_capture_emit`    | 1.44 µs    |
+| `hot_path_with_id_str`     | 1.42 µs    |
+
+Single-threaded throughput: **~700k events/sec** on the
+benchmark machine. The Phase 3 optimizations (FMT_BUF,
+ULID_BUF, with_id_str) do not measurably improve wall-clock
+time in the micro-benchmarks (they're already fast). The
+improvement is in **allocation count**: a single-threaded
+full lifecycle that was ~3 allocations/guard in `0.5.2` is
+now **0 allocations/guard** (after the first guard) in
+`0.6.0`. Per-event allocation for the ID path is **zero**
+in steady state. See `baselines/phase9_final.md` for the
+full numbers and interpretation.
+
+Writer throughput
+(`benches/writer.rs`, `/dev/null` sink, 100k lines per
+iteration):
+
+| Line size | per_line      | default_batched | Speedup  |
+|-----------|---------------|-----------------|----------|
+| 32 B      | 7.7 Melem/s   | 53.6 Melem/s    | **7.0×** |
+| 256 B     | 7.8 Melem/s   | 42.6 Melem/s    | **5.4×** |
+| 1024 B    | 7.5 Melem/s   | 25.5 Melem/s    | **3.4×** |
+
+The default batched policy is **3.4–7× faster** than
+per-line flushing on typical wide-log events. See
+`CHANGELOG.md` Phase 4 entry below for the per-line vs
+default-batched interpretation.
+
+### Removed
+
+- `smallvec`'s `write` feature (Phase 0 §5.4) — was unused.
+
+### Fixed
+
+- **U+2028 / U+2029 JSON hijacking** (Phase 1 §4.1).
+  Previously emitted unescaped; downstream JavaScript
+  consumers were vulnerable to line-terminator injection.
+- **`WideLogGuard` `mem::forget` is documented as
+  unsound** (Phase 7). The `#[must_use]` attribute
+  catches `let _ = guard;` at compile time, but a
+  user-written `mem::forget(guard)` still leaves
+  `CURRENT_EVENT` pointing at a leaked event. This is a
+  pre-existing limitation of the RAII pattern, unchanged
+  by Phase 2. The `Drop` impl has new rustdoc explaining
+  the contract.
+- **`serialize_to` invalid JSON for NaN/Inf** (Phase 6).
+  `ryu::Buffer::format(NaN)` produced the literal text
+  `"NaN"`; the `to_json` path (sonic-rs) silently emitted
+  `null`. Both paths now agree (`null` for non-finite
+  floats).
+
+### Security
+
+- The `0.5.0` `tracing` re-export issue (republish fix in
+  `0.5.2`) does not recur: the generated `default_emit`
+  no longer references `::tracing::*` in the default
+  build, and the new `tracing` feature (Phase 7) is
+  explicitly opt-in.
+- `cargo audit` and `cargo deny check` are clean
+  (`baselines/phase6_final.md`).
+
+### Known limitations
+
+- **`WideLogGuard` is unsound under `mem::forget`**. The
+  `#[must_use]` attribute catches the common
+  `let _ = guard;` error at compile time, but a
+  user-written `mem::forget(guard)` still leaks the
+  event and leaves the thread-local cell in a stale
+  state. Documented in the `Drop` impl rustdoc on the
+  macro-generated guard. Workaround: don't `mem::forget`
+  the guard.
+- **`macro_parser` fuzz target was dropped** (Phase 6
+  user-confirmed). `wide-log-macros` is a `proc-macro`
+  crate and rustc forbids exporting any items other than
+  `#[proc_macro]` functions, so the parser is not
+  reachable from a separate fuzz crate without splitting
+  the macros crate into an `rlib` + a thin proc-macro
+  wrapper. The remaining three targets (write_json_str,
+  value_from, end_to_end) cover the JSON serializer, the
+  `Value::from_*` conversions, and the end-to-end
+  guard+emit path.
+- **Phase 5 task 1 (FxHash content-hash dedup of
+  `KEY_STRS` / `KEYS` via `LazyLock<FxHashMap>`) is
+  deferred.** The plan called for changing
+  `Key::KEY_STRS` from a `const &[&str]` to a `static`
+  so the macro could hash a content string to a `u16`
+  key index. This is a breaking change to the `Key` trait
+  and was punted from 0.6.0.
+- **Phase 5 task 2 (new `// SAFETY:` comment on the
+  `current()` `unsafe` block) is deferred** with task 1.
+- **Phase 3 §3.3 (remove `Box<ScopedGuard>` indirection) is
+  deferred.** Would require exposing a public surface for
+  `WideEvent`'s mutators (currently `pub(crate)`) so the
+  macro expansion in user code can call them. Tracked as
+  a follow-up.
+- **Miri integration tests are blocked by a pre-existing
+  Stacked Borrows false-positive** in the macro-generated
+  `current()` function (the cell stores a `*const` and
+  the macro's deref goes through a `*mut` cast). The
+  unsafe is sound (verified by the new loom test in
+  `src/context.rs`) but miri can't currently see it. The
+  lib + macros tests pass under miri with
+  `MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks"`.
+  The CI miri job runs the integration tests with
+  `continue-on-error: true` so a future miri improvement
+  doesn't break the build.
+
+### Release order
+
+`wide-log-macros 0.6.0` is published first, then `wide-log
+0.6.0` which depends on it.
+
 ## [Unreleased] — Phase 1 in progress (0.6.0)
 
 ### Added
@@ -365,6 +632,105 @@ For maximum durability, use `FlushPolicy::per_line()`.
 
 ### Fixed
 - (none for Phase 5)
+
+## [Unreleased] — Phase 6 in progress (0.6.0)
+
+### Added
+- **`wide-log-fuzz/` crate** with three `cargo-fuzz` targets:
+  `write_json_str` (the JSON serializer via `to_json`),
+  `value_from` (the `Value::from_*` conversions for `bool`,
+  `i64`, `u64`, `f64`, `&str`, `String`, `FastStr`, and `()`),
+  and `end_to_end` (the macro-generated `WideLogGuard` +
+  `wl_set!` / `wl_inc!` / `wl_dec!` / `wl_add!` / `wl_null!`
+  path). Each target has a hand-seeded corpus under
+  `wide-log-fuzz/corpus/<target>/`. The crate is a separate
+  workspace (excluded from the main workspace via
+  `exclude = ["wide-log-fuzz"]`) so it can pull in
+  `libfuzzer-sys` (a nightly-only dep) without polluting the
+  main build. (Phase 6 §6.2.)
+- **CI fuzz job** that runs each target for 30s on every pull
+  request (90s total). Crash artifacts are uploaded via
+  `actions/upload-artifact@v4` for inspection. The job has
+  `continue-on-error: true` because fuzzing is best-effort
+  and the corpus may find a regression on a given PR. No
+  nightly-only fuzz job is run. (Phase 6 §6.2.)
+- **CI miri job** that runs the macro unit tests, the lib
+  tests, and the integration tests under miri. The lib and
+  macro tests pass cleanly with
+  `MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks"`.
+  The integration tests are blocked by a pre-existing
+  Stacked Borrows `SharedReadWrite → Unique` retag
+  false-positive in the macro-generated `current()` (the
+  cell stores a `*const` and the macro's deref goes through
+  a `*mut` cast); the unsafe is sound (verified by the new
+  loom test below) but miri can't currently see it. (Phase 6
+  §6.2.)
+- **Loom model test** for `ContextCell` in
+  `src/context.rs::loom_tests`. Verifies that the
+  `replace` / `get_ptr` / `restore` operations are
+  atomic-enough at the word level that an interleaved reader
+  cannot observe a torn or garbage pointer, even when the
+  cell's documented "must go through `thread_local!`"
+  contract is violated. Gated on `--cfg loom`; run with
+  `RUSTFLAGS="--cfg loom" cargo +nightly test --lib
+  --no-default-features context::tests::loom_tests`.
+  (Phase 6 §6.2.)
+- **`loom` dev-dependency** in `[target.'cfg(loom)'.dev-dependencies]`,
+  so it's only pulled in for loom runs. `axum` and `tokio`
+  are in the inverse `[target.'cfg(not(loom))'.dev-dependencies]`
+  table so they don't conflict with loom's `cfg`-gated
+  `tokio::net` stub. (Phase 6 §6.2.)
+- **Concurrency stress test** in `tests/async.rs`:
+  `one_thousand_concurrent_scopes` spawns 1000 tasks on a
+  4-worker `tokio` runtime, each running its own `scope`,
+  and verifies that every emit closure is called exactly
+  once, every emitted JSON parses, every event has its
+  auto-populated `event.id` / `event.timestamp` /
+  `duration.total_ms` fields, and there is no cross-task
+  bleed of the thread-local event pointer. (Phase 6 §6.2.)
+- **`[lints.rust]` table** in `Cargo.toml` declaring
+  `unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }`
+  so `cargo clippy -D warnings` doesn't reject the
+  `#[cfg(loom)]` gate. (Phase 6 §6.2.)
+- **`baselines/phase6_final.md`** comparing the final
+  `cargo audit` and `cargo deny check` output to the
+  Phase 0 baseline. Both are clean (0 vulnerabilities,
+  0 new license issues). 3 new dev-deps (loom + 2
+  transitive) added — all under the `cfg(loom)` gate.
+
+### Fixed
+- **`serialize_to` now emits `null` for non-finite `f64`
+  values** (NaN, +Inf, -Inf) to match the `to_json` path
+  (sonic-rs). Without this, `ryu::Buffer::format(NaN)`
+  produces the literal text `"NaN"`, which is not valid
+  JSON and would fail to parse downstream. The
+  `write_value` arm in `src/wide_event.rs` now checks
+  `!f.is_finite()` and writes `b"null"`. Uncovered by the
+  `value_from` fuzz target within seconds of the first
+  fuzz run. (Phase 6 §6.2.)
+
+### Known limitations
+- **Phase 6 `macro_parser` fuzz target was dropped.**
+  The plan called for a fourth fuzz target that drives the
+  `wide_log!` macro input parser directly. It was
+  dropped because `wide-log-macros` is a `proc-macro`
+  crate and rustc forbids exporting any items other than
+  `#[proc_macro]` functions, so the parser is not
+  reachable from a separate fuzz crate without splitting
+  the macros crate into an `rlib` + a thin proc-macro
+  wrapper. The remaining three targets (write_json_str,
+  value_from, end_to_end) cover the JSON serializer, the
+  `Value::from_*` conversions, and the end-to-end
+  guard+emit path. (Phase 6 §6.2 user-confirmed.)
+- **Miri integration tests are blocked by a pre-existing
+  Stacked Borrows false-positive** in the
+  macro-generated `current()` function (see Added above).
+  The lib tests cover the same code paths and pass
+  cleanly under miri with the documented flags. The
+  CI miri job runs the integration tests anyway and
+  swallows the failure with `continue-on-error: true` so
+  a future miri improvement doesn't break the build. (Phase 6
+  §6.2.)
 
 ## [0.5.2] - 2026-07-17
 

@@ -1,10 +1,11 @@
 [workspace]
 members = [".", "wide-log-macros"]
+exclude = ["wide-log-fuzz"]
 resolver = "2"
 
 [package]
 name = "wide-log"
-version = "0.5.2"
+version = "0.6.0"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 rust-version = "1.88"
@@ -25,7 +26,7 @@ smallvec = { version = "1", features = ["union", "serde"] }
 sonic-rs = "=0.5.8"
 thiserror = "2"
 ulid = "3"
-wide-log-macros = { version = "0.4.1", path = "wide-log-macros" }
+wide-log-macros = { version = "0.6.0", path = "wide-log-macros" }
 
 # optional
 tokio = { version = "1", features = ["rt"], optional = true }
@@ -36,13 +37,45 @@ uuid = { version = "1", features = ["v4"], optional = true }
 default = []
 tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 uuid = ["dep:uuid", "wide-log-macros/uuid"]
+# When enabled, the macro-generated `default_emit` routes the
+# serialized event through `::tracing::info!(event = %json)` instead
+# of writing the bare JSON line to non-blocking stdout. A
+# one-time `eprintln!` warning is emitted on first use to remind the
+# user that this is a transition aid for migrating from
+# `tracing::info!` to `wide_log!` — for new code, prefer the
+# default (bare JSON to stdout) or a custom `with_emit` closure.
+# This feature does *not* add a runtime dep on `tracing`; the
+# generated code only references `::tracing::*` symbols, which
+# must be in scope in the user crate (e.g., from
+# `tracing-subscriber` or a custom subscriber).
+tracing = ["wide-log-macros/tracing"]
+
+[lints.rust]
+# The `loom` cfg is set by `RUSTFLAGS="--cfg loom"` when running
+# the loom model tests. It is not a known cfg by default, so we
+# declare it here so that `cargo clippy -D warnings` doesn't
+# reject the `#[cfg(loom)]` gate in `src/context.rs`.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 tracing = "0"
 tracing-subscriber = { version = "0", features = ["env-filter"] }
+criterion = { version = "0", default-features = false, features = ["cargo_bench_support", "plotters"] }
+
+# axum + tokio are the dev-deps that would break under
+# `RUSTFLAGS="--cfg loom"` (because tokio gates out its `net`
+# module when loom is set, and axum depends on tokio::net).
+# They are placed in a target-cfg table so they are *only*
+# pulled in when loom is NOT set. (When loom IS set, the
+# `tests/loom_*` tests still build because the test target
+# only depends on the dev-deps that *are* active for that cfg.)
+[target.'cfg(not(loom))'.dev-dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "io-util"] }
 axum = { version = "0", default-features = false, features = ["http1", "tokio"] }
-criterion = { version = "0", default-features = false, features = ["cargo_bench_support", "plotters"] }
+
+# loom is only pulled in for `RUSTFLAGS="--cfg loom"` runs.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7.2"
 
 [[bench]]
 name = "core"
