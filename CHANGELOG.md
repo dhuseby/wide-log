@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Phase 1 in progress (0.6.0)
+
+### Added
+- `WideEvent::present_count: usize` cached field, maintained incrementally
+  by `add`, `inc`, `dec`, `add_n`, and `object()`. Makes `len()` /
+  `count_present()` O(1) instead of O(K). The field is `pub(crate)` and
+  not exposed in the serialized JSON; direct construction of `WideEvent`
+  remains unsupported.
+- U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are now
+  escaped as `\u2028` / `\u2029` in the direct JSON serializer, to
+  prevent JavaScript-side JSON hijacking when downstream consumers
+  embed the emitted JSON in a `<script>` tag. (Phase 1 §4.1.)
+- Validation at macro-expansion time: empty `Log`/`Event`/`Duration`
+  override strings, or override strings containing `.`, `"`, or `\`
+  are now rejected with a `compile_error!`. (Phase 1 §4.5.)
+- Validation at macro-expansion time: a user-supplied default value
+  for `event.id` (e.g. `"event": { "id": "foo" }`) is now rejected
+  with a `compile_error!` because the default ULID generator at
+  build time would silently overwrite it. Use `"event": { "id": null }`
+  to opt in to the auto-id, or call `.with_id(...)` / `.with_uuid()` to
+  use a different generator. (Phase 1 §4.4.)
+- Unit tests in `wide-log-macros/src/codegen.rs` for `to_pascal_case`,
+  `is_rust_keyword`, `auto_add_duration` / `auto_add_event`,
+  `resolve_duration_subtree` / `resolve_event_subtree`, and `validate`.
+  (Phase 1 §6.1.)
+- `mem::forget` hazard test for the macro-generated `WideLogGuard`
+  in `tests/macros.rs`. (Phase 1 §1.3.)
+- `scope_emits_on_cancellation` test in `tests/async.rs` that drops a
+  `scope` future via `tokio::select!` and verifies the embedded
+  `ScopedGuard` still drops and emits. (Phase 1 §6.6.)
+
+### Changed
+- `__wl_resolve_path` no longer panics on an unknown path. The
+  generated macro arms now return an empty slice (no-op) with a
+  `debug_assert!` so a release build with an unknown path silently
+  becomes a no-op rather than crashing the application. Applies to
+  all path-taking generated macros: `wl_set!`, `wl_inc!`, `wl_dec!`,
+  `wl_add!`, `wl_null!`. (Phase 1 §1.1.)
+- `WideEvent::len()` and `WideEvent::count_present()` are now O(1)
+  (cached) instead of O(K) (linear scan). (Phase 1 §2.5.)
+- The fast path in `ScopedGuard::drop` now updates the parent's
+  `present_count` when it creates a new child object directly, so the
+  cached count remains consistent with the on-disk shape of the
+  event. (Phase 1 §2.5 / §4.4 follow-on.)
+- `MSRV` is now `1.88.0` (bumped from the originally-planned `1.85.0`
+  because the pre-existing `if let … && let …` chains require 1.88.0).
+
+### Fixed
+- `U+2028` / `U+2029` characters in user-supplied log fields, counter
+  names, and event/timestamp strings were emitted as raw UTF-8 bytes
+  by the direct serializer, which is technically valid JSON but can
+  enable JSON-hijacking attacks in JavaScript consumers. They are now
+  escaped to `\u2028` / `\u2029`. (Phase 1 §4.1.)
+- `WideEvent::to_json()` produced malformed JSON
+  (`{},"duration":{…}`) when a guard dropped with no user-supplied
+  fields because the fast path in `ScopedGuard::drop` created a child
+  object directly without updating the cached `present_count`. Fixed
+  by incrementing `present_count` in the fast path. (Phase 1 §2.5.)
+
 ## [0.5.2] - 2026-07-17
 
 ### Fixed

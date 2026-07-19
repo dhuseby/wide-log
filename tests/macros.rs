@@ -429,3 +429,69 @@ fn all_log_macros_shadow_tracing() {
     assert_eq!(log[3]["message"], "d");
     assert_eq!(log[4]["message"], "t");
 }
+
+// ---- Phase 1 §1.3: mem::forget hazard on WideLogGuard ----
+
+#[test]
+fn wide_log_guard_forget_does_not_emit() {
+    // Documenting the known hazard: `mem::forget(guard)` skips the
+    // `Drop` impl entirely, so the emit_fn is never called. This is
+    // a property of the user code (which should drop the guard or
+    // use `let _ = guard;` patterns), not of the guard itself.
+    //
+    // Phase 2 of the implementation plan will eliminate the raw-pointer
+    // pattern and make this case fully sound (no dangling pointer to
+    // restore). For now, the test just pins the current behavior.
+
+    let counter = Arc::new(Mutex::new(0u32));
+    let c = counter.clone();
+    let emit = move |_: &wide_log::WideEvent<EventKey>| {
+        *c.lock().unwrap() += 1;
+    };
+    let guard = WideLogGuard::builder().with_emit(emit).build();
+    std::mem::forget(guard);
+    // Emit was never called because Drop was skipped.
+    assert_eq!(*counter.lock().unwrap(), 0);
+}
+
+#[test]
+fn wide_log_guard_drop_restores_thread_local() {
+    // The normal path: a guard's Drop restores the previous
+    // CURRENT_EVENT pointer so nested guards work correctly.
+    // We verify the outer guard "wins" after the inner one is
+    // dropped.
+    let outer_captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let inner_captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let oc = outer_captured.clone();
+    let ic = inner_captured.clone();
+
+    let outer = WideLogGuard::builder()
+        .with_emit(move |ev| {
+            *oc.lock().unwrap() = Some(ev.to_json().unwrap());
+        })
+        .build();
+    wl_set!("status", "outer");
+
+    {
+        let inner = WideLogGuard::builder()
+            .with_emit(move |ev| {
+                *ic.lock().unwrap() = Some(ev.to_json().unwrap());
+            })
+            .build();
+        wl_set!("status", "inner");
+        drop(inner);
+    }
+
+    // After the inner guard drops, the outer guard is restored. We
+    // can still mutate the outer event.
+    wl_set!("status", "outer-again");
+    drop(outer);
+
+    let outer_json = outer_captured.lock().unwrap().clone().unwrap();
+    let inner_json = inner_captured.lock().unwrap().clone().unwrap();
+    let outer_parsed: sonic_rs::Value = sonic_rs::from_str(&outer_json).unwrap();
+    let inner_parsed: sonic_rs::Value = sonic_rs::from_str(&inner_json).unwrap();
+    assert_eq!(outer_parsed["status"], "outer-again");
+    assert_eq!(inner_parsed["status"], "inner");
+}

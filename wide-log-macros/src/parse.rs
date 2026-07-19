@@ -242,9 +242,37 @@ fn parse_override_path(
     Ok(vec![first])
 }
 
+/// Validates a user-supplied override string. Returns an error message
+/// describing the problem if the value is invalid, or `None` if it is OK.
+fn validate_override_value(path: &str, value: &str) -> Option<String> {
+    if value.is_empty() {
+        return Some(format!(
+            "override for `{path}` is empty; this would produce \
+             broken JSON output"
+        ));
+    }
+    if value.contains('.') {
+        return Some(format!(
+            "override for `{path}` contains a `.` ({value:?}); \
+             nested keys must be declared in the JSON body, not via override"
+        ));
+    }
+    if value.contains('"') || value.contains('\\') {
+        return Some(format!(
+            "override for `{path}` contains a quote or backslash \
+             ({value:?}); this would produce broken JSON output"
+        ));
+    }
+    None
+}
+
 /// Assigns an override value to the correct field in `KeyOverrides`,
 /// validating that the dotted path is a known built-in key path.
 fn assign_override(ovr: &mut KeyOverrides, path: &[String], value: &str) -> Result<(), String> {
+    let path_label = path.join(".");
+    if let Some(msg) = validate_override_value(&path_label, value) {
+        return Err(msg);
+    }
     match path.len() {
         1 => match path[0].as_str() {
             "Log" => {
@@ -765,5 +793,39 @@ mod tests {
     fn err_missing_comma_after_overrides() {
         let err = parse_full_err(r#"[ Event => "a" ] { "status": null }"#);
         assert!(err.contains("expected ',' after override list"));
+    }
+
+    // ── Override validation tests (§4.5) ──
+
+    #[test]
+    fn err_empty_override_value() {
+        let err = parse_full_err(r#"[ Log => "" ], { "status": null }"#);
+        assert!(err.contains("empty"), "got: {err}");
+        assert!(err.contains("Log"));
+    }
+
+    #[test]
+    fn err_override_with_dot() {
+        let err = parse_full_err(r#"[ Log => "a.b" ], { "status": null }"#);
+        assert!(err.contains('.'), "got: {err}");
+        assert!(err.contains("Log"));
+    }
+
+    #[test]
+    fn err_subkey_override_with_dot() {
+        let err = parse_full_err(r#"[ Log.Level => "x.y" ], { "status": null }"#);
+        assert!(err.contains("Log.Level"), "got: {err}");
+    }
+
+    #[test]
+    fn err_override_with_quote() {
+        let err = parse_full_err(r#"[ Event => "a\"b" ], { "status": null }"#);
+        assert!(err.contains("quote"), "got: {err}");
+    }
+
+    #[test]
+    fn no_err_for_valid_override() {
+        // Sanity: a clean override must not error.
+        parse_full(r#"[ Log => "my_log" ], { "status": null }"#);
     }
 }

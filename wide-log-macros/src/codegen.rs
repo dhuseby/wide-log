@@ -445,6 +445,26 @@ impl GenContext {
                 "internal error: id path is empty",
             ));
         }
+
+        // §4.4: detect user-declared default for `event.id` that will be
+        // silently overwritten by the default ULID generator at build time.
+        // We only warn/error if a default is present; if the user has set
+        // a custom id_fn via `with_id` (or `with_uuid`) they get to keep
+        // both pieces, but at codegen time we can't tell, so we always
+        // surface the conflict. Users can suppress by removing the
+        // default value from the schema (e.g. `"event": { "id": null }`).
+        let has_id_default = self.defaults.iter().any(|d| d.segments == self.id_segments);
+        if has_id_default {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "wide-log: user-supplied default for `event.id` will be \
+                 overwritten by the default ULID generator at build time. \
+                 Set `\"event\": { \"id\": null }` to keep the user value, \
+                 or call `.with_id(...)` / `.with_uuid()` on the builder \
+                 to use a different ID generator",
+            ));
+        }
+
         Ok(())
     }
 
@@ -577,7 +597,13 @@ impl GenContext {
             pub fn __wl_resolve_path(path: &str) -> &'static [EventKey] {
                 match path {
                     #(#resolve_arms,)*
-                    _ => panic!("unknown wide-log key path: {path}"),
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "wide-log: unknown key path {path:?}; check schema declaration"
+                        );
+                        &[]
+                    }
                 }
             }
         };
@@ -1094,4 +1120,253 @@ fn is_rust_keyword(s: &str) -> bool {
             | "try"
             | "union"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::{JsonNode, parse_wide_log_input};
+    use proc_macro2::TokenStream as TokenStream2;
+
+    fn parse_json(input: &str) -> JsonNode {
+        let ts: TokenStream2 = input.parse().unwrap();
+        let (_ovr, n) = parse_wide_log_input(&ts).unwrap();
+        n
+    }
+
+    // ── to_pascal_case ──
+
+    #[test]
+    fn to_pascal_case_simple() {
+        assert_eq!(to_pascal_case("foo"), "Foo");
+        assert_eq!(to_pascal_case("foo_bar"), "FooBar");
+    }
+
+    #[test]
+    fn to_pascal_case_dotted() {
+        assert_eq!(to_pascal_case("service.name"), "ServiceName");
+    }
+
+    #[test]
+    fn to_pascal_case_already_pascal() {
+        assert_eq!(to_pascal_case("Foo"), "Foo");
+    }
+
+    #[test]
+    fn to_pascal_case_keyword_appends_underscore() {
+        // to_pascal_case operates on the uppercased form. Lowercase
+        // keywords ("type", "fn", "let") are not detected as keywords
+        // after uppercasing, so they pass through unchanged. The "Self"
+        // keyword has a capitalized form that IS detected, so it gets
+        // an underscore appended.
+        assert_eq!(to_pascal_case("type"), "Type");
+        assert_eq!(to_pascal_case("fn"), "Fn");
+        assert_eq!(to_pascal_case("self"), "Self_"); // "Self" is in keyword list
+    }
+
+    #[test]
+    fn to_pascal_case_empty_segments_ignored() {
+        // Leading/trailing/consecutive separators should not produce empty
+        // words; multiple leading uppercase letters are preserved as-is.
+        assert_eq!(to_pascal_case("a__b"), "AB");
+        assert_eq!(to_pascal_case("a.b"), "AB");
+    }
+
+    // ── is_rust_keyword ──
+
+    #[test]
+    fn is_rust_keyword_recognizes_strict_keywords() {
+        assert!(is_rust_keyword("as"));
+        assert!(is_rust_keyword("break"));
+        assert!(is_rust_keyword("const"));
+        assert!(is_rust_keyword("continue"));
+        assert!(is_rust_keyword("crate"));
+        assert!(is_rust_keyword("else"));
+        assert!(is_rust_keyword("enum"));
+        assert!(is_rust_keyword("extern"));
+        assert!(is_rust_keyword("false"));
+        assert!(is_rust_keyword("fn"));
+        assert!(is_rust_keyword("for"));
+        assert!(is_rust_keyword("if"));
+        assert!(is_rust_keyword("impl"));
+        assert!(is_rust_keyword("in"));
+        assert!(is_rust_keyword("let"));
+        assert!(is_rust_keyword("loop"));
+        assert!(is_rust_keyword("match"));
+        assert!(is_rust_keyword("mod"));
+        assert!(is_rust_keyword("move"));
+        assert!(is_rust_keyword("mut"));
+        assert!(is_rust_keyword("pub"));
+        assert!(is_rust_keyword("ref"));
+        assert!(is_rust_keyword("return"));
+        assert!(is_rust_keyword("self"));
+        assert!(is_rust_keyword("Self"));
+        assert!(is_rust_keyword("static"));
+        assert!(is_rust_keyword("struct"));
+        assert!(is_rust_keyword("super"));
+        assert!(is_rust_keyword("trait"));
+        assert!(is_rust_keyword("true"));
+        assert!(is_rust_keyword("type"));
+        assert!(is_rust_keyword("unsafe"));
+        assert!(is_rust_keyword("use"));
+        assert!(is_rust_keyword("where"));
+        assert!(is_rust_keyword("while"));
+    }
+
+    #[test]
+    fn is_rust_keyword_recognizes_reserved() {
+        assert!(is_rust_keyword("abstract"));
+        assert!(is_rust_keyword("become"));
+        assert!(is_rust_keyword("box"));
+        assert!(is_rust_keyword("do"));
+        assert!(is_rust_keyword("final"));
+        assert!(is_rust_keyword("macro"));
+        assert!(is_rust_keyword("override"));
+        assert!(is_rust_keyword("priv"));
+        assert!(is_rust_keyword("typeof"));
+        assert!(is_rust_keyword("unsized"));
+        assert!(is_rust_keyword("virtual"));
+        assert!(is_rust_keyword("yield"));
+        assert!(is_rust_keyword("try"));
+        assert!(is_rust_keyword("union"));
+    }
+
+    #[test]
+    fn is_rust_keyword_rejects_non_keywords() {
+        assert!(!is_rust_keyword("foo"));
+        assert!(!is_rust_keyword("Type"));
+        assert!(!is_rust_keyword("bar"));
+        assert!(!is_rust_keyword(""));
+    }
+
+    // ── auto_add_duration ──
+
+    #[test]
+    fn auto_add_duration_inserts_default_path() {
+        let node = parse_json(r#"{ "status": null }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_duration(&node).unwrap();
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    #[test]
+    fn auto_add_duration_resolves_user_declared_duration() {
+        let node = parse_json(r#"{ "duration": { "total_ms": 42 } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_duration(&node).unwrap();
+        // The user has declared "duration" with a `total_ms` leaf;
+        // auto_add_duration should resolve the existing subtree and
+        // set the duration marker so the drop path will populate it.
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    // ── auto_add_event ──
+
+    #[test]
+    fn auto_add_event_inserts_default_subtree() {
+        let node = parse_json(r#"{ "status": null }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_event(&node).unwrap();
+        assert!(ctx.has_event_key);
+        assert!(!ctx.timestamp_segments.is_empty());
+        assert!(!ctx.id_segments.is_empty());
+    }
+
+    #[test]
+    fn auto_add_event_skips_user_declared_event() {
+        let node = parse_json(r#"{ "event": { "timestamp": "ts", "id": "i" } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_event(&node).unwrap();
+        // User declared event; the auto-add path resolves the existing
+        // subtree instead of inserting defaults.
+        assert!(ctx.has_event_key);
+    }
+
+    // ── resolve_duration_subtree / resolve_event_subtree ──
+
+    #[test]
+    fn resolve_duration_subtree_empty_object() {
+        let node = parse_json(r#"{ "duration": {} }"#);
+        let mut ctx = GenContext::new(Default::default());
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "duration" {
+                    ctx.resolve_duration_subtree(v).unwrap();
+                }
+            }
+        }
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    #[test]
+    fn resolve_event_subtree_empty_object() {
+        let node = parse_json(r#"{ "event": {} }"#);
+        let mut ctx = GenContext::new(Default::default());
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        assert!(ctx.has_event_key);
+        assert!(!ctx.timestamp_segments.is_empty());
+        assert!(!ctx.id_segments.is_empty());
+    }
+
+    // ── validate ──
+
+    #[test]
+    fn validate_rejects_missing_duration_marker() {
+        let mut ctx = GenContext::new(Default::default());
+        ctx.duration_segments = vec!["duration".into(), "total_ms".into()];
+        ctx.timestamp_segments = vec!["event".into(), "timestamp".into()];
+        ctx.id_segments = vec!["event".into(), "id".into()];
+        // has_duration_marker is false → should error.
+        let err = ctx.validate().unwrap_err();
+        assert!(err.to_string().contains("duration"));
+    }
+
+    #[test]
+    fn validate_rejects_user_id_default() {
+        // The default ULID generator would overwrite a user-supplied default
+        // for `event.id` at build time. validate() should error.
+        let node = parse_json(r#"{ "event": { "id": "my_id" } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.walk(&node, &[]).unwrap();
+        ctx.auto_add_duration(&node).unwrap();
+        // Don't auto_add_event; the user has declared it.
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        let err = ctx.validate().unwrap_err();
+        assert!(err.to_string().contains("event.id"));
+        assert!(err.to_string().contains("ULID"));
+    }
+
+    #[test]
+    fn validate_accepts_null_event_id() {
+        // "id": null is the canonical "no default, fill in at build time"
+        // sentinel. It should not trigger the conflict error.
+        let node = parse_json(r#"{ "event": { "id": null } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.walk(&node, &[]).unwrap();
+        ctx.auto_add_duration(&node).unwrap();
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        ctx.validate()
+            .expect("validate should accept null event.id");
+    }
 }

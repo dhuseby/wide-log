@@ -134,10 +134,12 @@ where
             if need_dur_child {
                 let child = self.event.new_child();
                 self.event.values[dur_idx] = Some(crate::value::Value::from_object(child));
+                self.event.present_count += 1;
             }
             if need_ts_child {
                 let child = self.event.new_child();
                 self.event.values[ts_idx] = Some(crate::value::Value::from_object(child));
+                self.event.present_count += 1;
             }
 
             // Now write the leaf values

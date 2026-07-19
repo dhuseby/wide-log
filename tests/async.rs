@@ -251,3 +251,49 @@ async fn middleware_handler_can_use_macros() {
     // After the request, no guard is active.
     assert!(current().is_none());
 }
+
+// ---- Phase 1: scope cancellation ----
+
+#[tokio::test]
+async fn scope_emits_on_cancellation() {
+    // When a `scope` future is cancelled (dropped without being polled
+    // to completion), the `ScopedGuard` it owns should still drop and
+    // emit, just like a synchronous guard. Verify this with a
+    // `tokio::select!` race.
+    let (slot, emit) = capture();
+
+    // Build a scope future that will sleep forever unless cancelled.
+    let scope_fut = scope(emit, async {
+        wl_set!("status", "before-cancel");
+        // Yield once to let the outer `select!` poll us.
+        tokio::task::yield_now().await;
+        // Sleep so the outer select! can race us and pick the
+        // "cancel" branch first.
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        wl_set!("status", "after-sleep");
+    });
+
+    // Race the scope against a short timer. The timer wins, dropping
+    // the scope future — and the guard inside it.
+    tokio::select! {
+        _ = scope_fut => {
+            panic!("scope should not have completed");
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+            // Scope future was dropped mid-flight.
+        }
+    }
+
+    // After cancellation, the guard inside the scope should have been
+    // dropped and the emit called. The emit captured the JSON at
+    // whatever state the event was in at cancellation time.
+    let json = slot.lock().unwrap().clone().expect("emit was not called");
+    let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+    // The status was set to "before-cancel" before the sleep; the
+    // cancellation happened before "after-sleep".
+    assert_eq!(parsed["status"], "before-cancel");
+    // The duration and event metadata should still be present.
+    assert!(parsed["duration"]["total_ms"].is_number());
+    assert!(parsed["event"]["timestamp"].is_str());
+    assert!(parsed["event"]["id"].is_str());
+}

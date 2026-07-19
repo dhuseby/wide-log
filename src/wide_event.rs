@@ -22,6 +22,10 @@ const LOG_INLINE_CAP: usize = 16;
 /// the `"log"` key (if any log entries have been accumulated). The `"log"`
 /// key is never declared by the user — it appears automatically.
 ///
+/// `present_count` is a cached O(1) count of `Some(_)` slots, maintained
+/// incrementally by `add`, `inc`, `dec`, `add_n`, and `object()`. It is
+/// excluded from the serialized form.
+///
 /// This type is not constructed directly by users. The `wide_log!` macro
 /// generates a `WideLogGuard` that owns a `WideEvent` and manages the
 /// thread-local/task-local pointer via `current()`.
@@ -34,6 +38,11 @@ pub struct WideEvent<K: Key> {
     pub(crate) log_entries: SmallVec<[LogEntry<K>; LOG_INLINE_CAP]>,
     /// Optional callback fired when a key's value type conflicts.
     pub(crate) on_type_conflict: Option<ConflictFn<K>>,
+    /// Cached count of `Some(_)` slots in `values`. Maintained by mutation
+    /// methods so `len()` / `count_present()` are O(1) instead of O(K).
+    /// Not included in serialization (the custom `Serialize` impl iterates
+    /// the `values` array and emits the `log` key separately).
+    pub(crate) present_count: usize,
 }
 
 impl<K: Key> WideEvent<K> {
@@ -44,6 +53,7 @@ impl<K: Key> WideEvent<K> {
             values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: None,
+            present_count: 0,
         }
     }
 
@@ -60,7 +70,11 @@ impl<K: Key> WideEvent<K> {
     pub(crate) fn add<V: Into<Value<K>>>(&mut self, key: K, value: V) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
+        let prev = self.values[idx].is_none();
         self.values[idx] = Some(value.into());
+        if prev {
+            self.present_count += 1;
+        }
     }
 
     /// Gets or creates a nested object at the given key, returning `&mut` to it.
@@ -68,6 +82,7 @@ impl<K: Key> WideEvent<K> {
     pub(crate) fn object(&mut self, key: K) -> &mut WideEvent<K> {
         let idx = key.as_index();
         self.ensure_capacity(idx);
+        let prev_was_none = self.values[idx].is_none();
         let needs_replace = match &self.values[idx] {
             None => true,
             Some(v) => !v.is_object(),
@@ -79,6 +94,9 @@ impl<K: Key> WideEvent<K> {
                 cb(self, key);
             }
             self.values[idx] = Some(Value::from_object(self.new_child()));
+            if prev_was_none {
+                self.present_count += 1;
+            }
         }
         match &mut self.values[idx] {
             Some(Value::Object(boxed)) => boxed,
@@ -92,6 +110,7 @@ impl<K: Key> WideEvent<K> {
             values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: self.on_type_conflict,
+            present_count: 0,
         }
     }
 
@@ -122,6 +141,7 @@ impl<K: Key> WideEvent<K> {
     pub(crate) fn inc(&mut self, key: K) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
+        let prev_none = self.values[idx].is_none();
         let new_val = match &self.values[idx] {
             Some(Value::U64(n)) => Value::from(*n + 1),
             Some(Value::I64(n)) => Value::from(*n + 1),
@@ -129,6 +149,9 @@ impl<K: Key> WideEvent<K> {
             None => Value::from(1u64),
         };
         self.values[idx] = Some(new_val);
+        if prev_none {
+            self.present_count += 1;
+        }
     }
 
     /// Decrement a numeric field by 1. Initializes to -1 if absent.
@@ -136,6 +159,7 @@ impl<K: Key> WideEvent<K> {
     pub(crate) fn dec(&mut self, key: K) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
+        let prev_none = self.values[idx].is_none();
         let new_val = match &self.values[idx] {
             Some(Value::U64(n)) => {
                 if *n > 0 {
@@ -149,6 +173,9 @@ impl<K: Key> WideEvent<K> {
             None => Value::from(-1i64),
         };
         self.values[idx] = Some(new_val);
+        if prev_none {
+            self.present_count += 1;
+        }
     }
 
     /// Add a number to a numeric field. Initializes to `n` if absent.
@@ -156,6 +183,7 @@ impl<K: Key> WideEvent<K> {
     pub(crate) fn add_n(&mut self, key: K, n: i64) {
         let idx = key.as_index();
         self.ensure_capacity(idx);
+        let prev_none = self.values[idx].is_none();
         let new_val = match &self.values[idx] {
             Some(Value::U64(u)) => Value::from(u.saturating_add_signed(n)),
             Some(Value::I64(i)) => Value::from(*i + n),
@@ -175,6 +203,9 @@ impl<K: Key> WideEvent<K> {
             }
         };
         self.values[idx] = Some(new_val);
+        if prev_none {
+            self.present_count += 1;
+        }
     }
 
     #[inline]
@@ -227,7 +258,7 @@ impl<K: Key> WideEvent<K> {
 
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.values.iter().filter(|v| v.is_some()).count()
+        self.present_count
     }
 
     pub fn to_json(&self) -> Result<String, Error> {
@@ -243,7 +274,7 @@ impl<K: Key> WideEvent<K> {
     /// Count of present entries (alias for `len()`).
     #[inline]
     pub(crate) fn count_present(&self) -> usize {
-        self.values.iter().filter(|v| v.is_some()).count()
+        self.present_count
     }
 }
 
@@ -256,6 +287,7 @@ impl<K: Key> WideEvent<K> {
             values: SmallVec::new(),
             log_entries: SmallVec::new(),
             on_type_conflict: Some(f),
+            present_count: 0,
         }
     }
 
@@ -403,19 +435,29 @@ fn write_value<K: Key, W: std::io::Write>(
 #[inline]
 fn write_json_str<W: std::io::Write>(w: &mut W, s: &str) -> std::io::Result<()> {
     w.write_all(b"\"")?;
-    for c in s.bytes() {
+    for c in s.chars() {
         match c {
-            b'"' => w.write_all(b"\\\"")?,
-            b'\\' => w.write_all(b"\\\\")?,
-            b'\n' => w.write_all(b"\\n")?,
-            b'\t' => w.write_all(b"\\t")?,
-            b'\r' => w.write_all(b"\\r")?,
-            0x08 => w.write_all(b"\\b")?,
-            0x0c => w.write_all(b"\\f")?,
-            c if c < 0x20 => {
-                w.write_all(format!("\\u{c:04x}").as_bytes())?;
+            '"' => w.write_all(b"\\\"")?,
+            '\\' => w.write_all(b"\\\\")?,
+            '\n' => w.write_all(b"\\n")?,
+            '\t' => w.write_all(b"\\t")?,
+            '\r' => w.write_all(b"\\r")?,
+            '\u{0008}' => w.write_all(b"\\b")?,
+            '\u{000C}' => w.write_all(b"\\f")?,
+            // U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR)
+            // are valid in JSON strings but are treated as line terminators
+            // by JavaScript engines, which can enable JSON hijacking
+            // attacks when JSON is interpreted as JS. Escape them.
+            '\u{2028}' => w.write_all(b"\\u2028")?,
+            '\u{2029}' => w.write_all(b"\\u2029")?,
+            c if (c as u32) < 0x20 => {
+                w.write_all(format!("\\u{:04x}", c as u32).as_bytes())?;
             }
-            c => w.write_all(&[c])?,
+            c => {
+                let mut buf = [0u8; 4];
+                let s = c.encode_utf8(&mut buf);
+                w.write_all(s.as_bytes())?;
+            }
         }
     }
     w.write_all(b"\"")?;
