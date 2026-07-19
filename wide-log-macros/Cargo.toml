@@ -1,8 +1,9 @@
 [package]
 name = "wide-log-macros"
-version = "0.4.1"
+version = "0.6.0"
 authors = ["David Grantham"]
 edition = "2024"
+rust-version = "1.88"
 description = "Macros for a fast wide event logging crate a la loggingsucks.com"
 license = "Apache-2.0"
 readme = "../README.md"
@@ -14,6 +15,14 @@ proc-macro = true
 [features]
 tokio = []
 uuid = []
+# When enabled, the macro-generated `default_emit` routes the
+# serialized event through `::tracing::info!(event = %json)` instead
+# of writing the bare JSON line to non-blocking stdout. A
+# one-time `eprintln!` warning is emitted on first use to remind the
+# user that this is a transition aid for migrating from
+# `tracing::info!` to `wide_log!` — for new code, prefer the
+# default (bare JSON to stdout) or a custom `with_emit` closure.
+tracing = []
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

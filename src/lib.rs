@@ -140,6 +140,23 @@ pub use value::Value;
 pub use wide_event::WideEvent;
 
 pub use context::ContextCell;
+pub use context::RestoreOnDrop;
+
+/// Public API surface used by the `wide_log!` macro expansion. The macro
+/// needs to construct a [`WideEvent`], call mutators like
+/// [`WideEvent::add_path`], and read `values` / `present_count` to
+/// implement the inlined fast path for the guard's drop. The mutators
+/// are `pub(crate)` for end users (so they don't bypass the
+/// schema-first API), but the macro is expanded in user crates and
+/// therefore needs a public surface.
+///
+/// Stability: the contents of this module are an internal
+/// implementation detail of the `wide_log!` macro and may change
+/// between releases. Do not call these directly.
+#[doc(hidden)]
+pub mod __macro_internals {
+    pub use crate::value::Value;
+}
 
 pub mod stdout_emit;
 

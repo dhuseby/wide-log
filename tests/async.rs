@@ -251,3 +251,121 @@ async fn middleware_handler_can_use_macros() {
     // After the request, no guard is active.
     assert!(current().is_none());
 }
+
+// ---- Phase 1: scope cancellation ----
+
+#[tokio::test]
+async fn scope_emits_on_cancellation() {
+    // When a `scope` future is cancelled (dropped without being polled
+    // to completion), the `ScopedGuard` it owns should still drop and
+    // emit, just like a synchronous guard. Verify this with a
+    // `tokio::select!` race.
+    let (slot, emit) = capture();
+
+    // Build a scope future that will sleep forever unless cancelled.
+    let scope_fut = scope(emit, async {
+        wl_set!("status", "before-cancel");
+        // Yield once to let the outer `select!` poll us.
+        tokio::task::yield_now().await;
+        // Sleep so the outer select! can race us and pick the
+        // "cancel" branch first.
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        wl_set!("status", "after-sleep");
+    });
+
+    // Race the scope against a short timer. The timer wins, dropping
+    // the scope future — and the guard inside it.
+    tokio::select! {
+        _ = scope_fut => {
+            panic!("scope should not have completed");
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+            // Scope future was dropped mid-flight.
+        }
+    }
+
+    // After cancellation, the guard inside the scope should have been
+    // dropped and the emit called. The emit captured the JSON at
+    // whatever state the event was in at cancellation time.
+    let json = slot.lock().unwrap().clone().expect("emit was not called");
+    let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+    // The status was set to "before-cancel" before the sleep; the
+    // cancellation happened before "after-sleep".
+    assert_eq!(parsed["status"], "before-cancel");
+    // The duration and event metadata should still be present.
+    assert!(parsed["duration"]["total_ms"].is_number());
+    assert!(parsed["event"]["timestamp"].is_str());
+    assert!(parsed["event"]["id"].is_str());
+}
+
+// ---- Phase 6: concurrency stress test ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_thousand_concurrent_scopes() {
+    // Stress test: spawn 1000+ tasks on a multi-thread runtime, each
+    // running its own `scope`. Verify that:
+    // - Every emit closure is called exactly once.
+    // - Every emitted JSON parses.
+    // - Every emitted JSON has the auto-populated event/duration fields.
+    // - The `service.name` field is the one this task set (no
+    //   cross-task bleed of the thread-local event pointer).
+    const N_TASKS: usize = 1000;
+
+    let slots: Vec<Arc<Mutex<Option<String>>>> =
+        (0..N_TASKS).map(|_| Arc::new(Mutex::new(None))).collect();
+
+    let mut handles = Vec::with_capacity(N_TASKS);
+    for (i, slot) in slots.iter().enumerate() {
+        let s = slot.clone();
+        handles.push(tokio::spawn(scope(
+            move |ev| *s.lock().unwrap() = Some(ev.to_json().unwrap()),
+            async move {
+                wl_set!("service.name", format!("task-{i}"));
+                wl_inc!("requests");
+                // Yield a few times to interleave the tasks across
+                // the worker threads.
+                for _ in 0..3 {
+                    tokio::task::yield_now().await;
+                }
+                wl_inc!("requests");
+            },
+        )));
+    }
+
+    for h in handles {
+        h.await.expect("task should not panic");
+    }
+
+    // Verify every task produced a valid JSON with the expected
+    // fields and no cross-task contamination.
+    for (i, slot) in slots.iter().enumerate() {
+        let json = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("every task must emit exactly once");
+        let parsed: sonic_rs::Value =
+            sonic_rs::from_str(&json).expect("every emitted JSON must parse");
+        assert_eq!(
+            parsed["service"]["name"],
+            format!("task-{i}"),
+            "task {i} saw the wrong service.name (cross-task bleed)"
+        );
+        assert_eq!(
+            parsed["requests"], 2,
+            "task {i} should have incremented requests twice"
+        );
+        assert!(
+            parsed["event"]["id"].is_str(),
+            "task {i} should have an auto-generated event.id"
+        );
+        assert!(
+            parsed["event"]["timestamp"].is_str(),
+            "task {i} should have an auto-generated event.timestamp"
+        );
+        assert!(
+            parsed["duration"]["total_ms"].is_number(),
+            "task {i} should have a measured duration.total_ms"
+        );
+    }
+}

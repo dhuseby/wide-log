@@ -62,7 +62,9 @@ async fn main() {
 
     let app = Router::new().route("/ok", get(ok)).layer(WideLogLayer);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
 
     println!("Server listening on http://127.0.0.1:3000");
     println!("Run this in another terminal to trigger the wide-log emit, then the service exits:");

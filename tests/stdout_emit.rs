@@ -99,7 +99,10 @@ fn default_emit_writes_log_entries_and_event_metadata() {
     // Auto-added event metadata.
     let timestamp = parsed["event"]["timestamp"].as_str().unwrap_or("");
     assert!(!timestamp.is_empty(), "event.timestamp is empty");
-    assert!(timestamp.contains('T'), "timestamp not RFC 3339: {timestamp}");
+    assert!(
+        timestamp.contains('T'),
+        "timestamp not RFC 3339: {timestamp}"
+    );
 
     let id = parsed["event"]["id"].as_str().unwrap_or("");
     assert!(!id.is_empty(), "event.id is empty");

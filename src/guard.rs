@@ -48,6 +48,15 @@ where
             emit_fn: Some(emit_fn),
         }
     }
+
+    /// Returns a raw pointer to the inner `WideEvent<K>`. The pointer
+    /// is valid for the lifetime of this `ScopedGuard` and is intended
+    /// to be stored in a [`ContextCell`] for lookup via `current()`.
+    ///
+    /// [`ContextCell`]: crate::ContextCell
+    pub fn event_ptr(&self) -> *const WideEvent<K> {
+        &self.event as *const _
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +122,17 @@ where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
     fn drop(&mut self) {
-        let duration_ms = self.start.elapsed().as_millis() as u64;
+        // Phase 3 §2.5: `as_millis() as u64` silently truncates on
+        // platforms where `u128` is wider than `u64` (effectively never
+        // on 64-bit, but the conversion is lossy in principle). Use
+        // `try_into` to saturate at `u64::MAX` instead of panicking
+        // in debug builds or wrapping in release.
+        let duration_ms: u64 = self
+            .start
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
         // Fast path for common 2-segment DURATION_PATH and TIMESTAMP_PATH.
         // Uses direct indexed writes instead of object() to avoid the overhead
         // of creating and returning &mut references through the ManuallyDrop chain.
@@ -122,7 +141,13 @@ where
             let ts_idx = K::TIMESTAMP_PATH[0].as_index();
             self.event.ensure_capacity(dur_idx.max(ts_idx));
 
-            // Create child objects if needed (before mutable borrow)
+            // Phase 3 §2.4: skip `new_child()` when the child slot is
+            // already a valid `Object`. Previously, the code created a
+            // new child whenever `values[idx]` was `None` or held a
+            // non-object, which would clobber an existing object the
+            // user had already populated. We now read the existing
+            // child if it is already an object and only allocate a new
+            // one when the slot is empty or wrong-typed.
             let need_dur_child = match &self.event.values.get(dur_idx) {
                 Some(Some(v)) => !v.is_object(),
                 _ => true,
@@ -134,10 +159,12 @@ where
             if need_dur_child {
                 let child = self.event.new_child();
                 self.event.values[dur_idx] = Some(crate::value::Value::from_object(child));
+                self.event.present_count += 1;
             }
             if need_ts_child {
                 let child = self.event.new_child();
                 self.event.values[ts_idx] = Some(crate::value::Value::from_object(child));
+                self.event.present_count += 1;
             }
 
             // Now write the leaf values

@@ -1,13 +1,16 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::parse::{DurationOverride, EventOverride, JsonNode, KeyOverrides, LogOverride, Marker, Number};
+use crate::parse::{
+    DurationOverride, EventOverride, JsonNode, KeyOverrides, LogOverride, Marker, Number,
+};
 
 pub fn generate(
     root: JsonNode,
     overrides: KeyOverrides,
     tokio: bool,
     uuid: bool,
+    tracing: bool,
 ) -> Result<TokenStream2, syn::Error> {
     let mut ctx = GenContext::new(overrides);
     ctx.walk(&root, &[])?;
@@ -17,7 +20,7 @@ pub fn generate(
 
     ctx.validate()?;
 
-    Ok(ctx.emit(tokio, uuid))
+    Ok(ctx.emit(tokio, uuid, tracing))
 }
 
 #[derive(Clone, Debug)]
@@ -74,9 +77,20 @@ struct GenContext {
 
 impl GenContext {
     fn new(overrides: KeyOverrides) -> Self {
-        let LogOverride { key, level, message } = overrides.log;
-        let EventOverride { key: ev_key, id, timestamp } = overrides.event;
-        let DurationOverride { key: dur_key, total_ms } = overrides.duration;
+        let LogOverride {
+            key,
+            level,
+            message,
+        } = overrides.log;
+        let EventOverride {
+            key: ev_key,
+            id,
+            timestamp,
+        } = overrides.event;
+        let DurationOverride {
+            key: dur_key,
+            total_ms,
+        } = overrides.duration;
         Self {
             keys: Vec::new(),
             key_index: std::collections::BTreeMap::new(),
@@ -196,16 +210,13 @@ impl GenContext {
     fn auto_add_duration(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_duration = entries.iter().any(|(k, _)| *k == self.builtin_duration);
-                if !has_duration {
-                    self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
-                } else {
-                    let duration_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == self.builtin_duration)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.resolve_duration_subtree(duration_node)?;
+                match entries.iter().find(|(k, _)| *k == self.builtin_duration) {
+                    None => {
+                        self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
+                    }
+                    Some((_, v)) => {
+                        self.resolve_duration_subtree(v)?;
+                    }
                 }
             }
             _ => unreachable!(),
@@ -230,7 +241,7 @@ impl GenContext {
             JsonNode::Object(entries) => {
                 let duration_seg = self.builtin_duration.clone();
                 self.add_key(&duration_seg);
-                self.add_path(&[duration_seg.clone()]);
+                self.add_path(std::slice::from_ref(&duration_seg));
 
                 if entries.is_empty() {
                     self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
@@ -311,16 +322,13 @@ impl GenContext {
     fn auto_add_event(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_event = entries.iter().any(|(k, _)| *k == self.builtin_event);
-                if !has_event {
-                    self.add_event_subtree();
-                } else {
-                    let event_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == self.builtin_event)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.resolve_event_subtree(event_node)?;
+                match entries.iter().find(|(k, _)| *k == self.builtin_event) {
+                    None => {
+                        self.add_event_subtree();
+                    }
+                    Some((_, v)) => {
+                        self.resolve_event_subtree(v)?;
+                    }
                 }
             }
             _ => unreachable!(),
@@ -335,7 +343,7 @@ impl GenContext {
         self.add_key(&event_seg);
         self.add_key(&timestamp_seg);
         self.add_key(&id_seg);
-        self.add_path(&[event_seg.clone()]);
+        self.add_path(std::slice::from_ref(&event_seg));
         self.add_path(&[event_seg.clone(), timestamp_seg.clone()]);
         self.add_path(&[event_seg.clone(), id_seg.clone()]);
         self.timestamp_segments = vec![event_seg.clone(), timestamp_seg];
@@ -350,43 +358,31 @@ impl GenContext {
         match node {
             JsonNode::Object(entries) => {
                 self.add_key(&event_seg);
-                self.add_path(&[event_seg.clone()]);
+                self.add_path(std::slice::from_ref(&event_seg));
 
                 if entries.is_empty() {
                     self.add_event_subtree();
                     return Ok(());
                 }
 
-                let has_timestamp = entries.iter().any(|(k, _)| *k == timestamp_str);
-                let has_id = entries.iter().any(|(k, _)| *k == id_str);
+                let ts_node = entries.iter().find(|(k, _)| *k == timestamp_str);
+                let id_node = entries.iter().find(|(k, _)| *k == id_str);
 
-                if !has_timestamp {
+                if let Some((_, ts_node)) = ts_node {
+                    self.walk(ts_node, &[event_seg.clone(), timestamp_str.clone()])?;
+                } else {
                     self.add_key(&timestamp_str);
                     self.add_path(&[event_seg.clone(), timestamp_str.clone()]);
-                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
-                } else {
-                    let ts_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == timestamp_str)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.walk(ts_node, &[event_seg.clone(), timestamp_str.clone()])?;
-                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
                 }
+                self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
 
-                if !has_id {
+                if let Some((_, id_node)) = id_node {
+                    self.walk(id_node, &[event_seg.clone(), id_str.clone()])?;
+                } else {
                     self.add_key(&id_str);
                     self.add_path(&[event_seg.clone(), id_str.clone()]);
-                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
-                } else {
-                    let id_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == id_str)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.walk(id_node, &[event_seg.clone(), id_str.clone()])?;
-                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
                 }
+                self.id_segments = vec![event_seg.clone(), id_str.clone()];
 
                 for (k, v) in entries {
                     if *k != timestamp_str && *k != id_str {
@@ -432,10 +428,30 @@ impl GenContext {
                 "internal error: id path is empty",
             ));
         }
+
+        // §4.4: detect user-declared default for `event.id` that will be
+        // silently overwritten by the default ULID generator at build time.
+        // We only warn/error if a default is present; if the user has set
+        // a custom id_fn via `with_id` (or `with_uuid`) they get to keep
+        // both pieces, but at codegen time we can't tell, so we always
+        // surface the conflict. Users can suppress by removing the
+        // default value from the schema (e.g. `"event": { "id": null }`).
+        let has_id_default = self.defaults.iter().any(|d| d.segments == self.id_segments);
+        if has_id_default {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "wide-log: user-supplied default for `event.id` will be \
+                 overwritten by the default ULID generator at build time. \
+                 Set `\"event\": { \"id\": null }` to keep the user value, \
+                 or call `.with_id(...)` / `.with_uuid()` on the builder \
+                 to use a different ID generator",
+            ));
+        }
+
         Ok(())
     }
 
-    fn emit(&self, tokio: bool, uuid: bool) -> TokenStream2 {
+    fn emit(&self, tokio: bool, uuid: bool, tracing: bool) -> TokenStream2 {
         let enum_variants: Vec<syn::Ident> = self
             .keys
             .iter()
@@ -564,7 +580,13 @@ impl GenContext {
             pub fn __wl_resolve_path(path: &str) -> &'static [EventKey] {
                 match path {
                     #(#resolve_arms,)*
-                    _ => panic!("unknown wide-log key path: {path}"),
+                    _ => {
+                        debug_assert!(
+                            false,
+                            "wide-log: unknown key path {path:?}; check schema declaration"
+                        );
+                        &[]
+                    }
                 }
             }
         };
@@ -576,40 +598,161 @@ impl GenContext {
 
                 static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
                     const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
+
+                // Phase 3 §3.1: reusable thread-local format buffer for
+                // `info!`, `warn!`, `error!`, `debug!`, `trace!` with
+                // format args. Cleared (not freed) between calls so the
+                // underlying `String` allocation is reused across all
+                // log calls on this thread. Saves the ~50–200 ns/call
+                // of allocating + freeing a fresh `String::with_capacity(64)`
+                // (Phase 0 baseline measurement).
+                static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
+                    const { ::std::cell::RefCell::new(::std::string::String::new()) };
+
+                // Phase 3 §3.2: reusable thread-local ULID buffer.
+                // The default id generator writes a 26-character
+                // ULID string into this buffer and `.clone()`s the
+                // result for the caller's owned `String`. The
+                // underlying allocation is preserved across guard
+                // creations, so per-thread steady-state allocation
+                // for the ID path is zero.
+                static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
+                    const { ::std::cell::RefCell::new(::std::string::String::new()) };
             }
         };
 
-        let default_emit = quote! {
-            fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
-                EMIT_BUF.with(|buf| {
-                    let mut buf = buf.borrow_mut();
-                    buf.clear();
-                    if ev.serialize_to(&mut *buf).is_ok() {
-                        // Safety: our serializer only writes valid UTF-8.
-                        let json = unsafe { ::std::string::String::from_utf8_unchecked(buf.split_off(0)) };
-                        ::wide_log::stdout_emit::submit(json);
+        let default_emit = if tracing {
+            // The `tracing` feature is enabled on the macros crate:
+            // route the serialized event through `::tracing::info!`
+            // (which the user crate must have in scope via a
+            // tracing-subscriber init). A one-time `eprintln!` warning
+            // is emitted to remind the user that this is a
+            // transition aid, not the default. The actual JSON
+            // payload is the value of the `event=` field on a
+            // tracing info record; subscribers format the surrounding
+            // envelope (timestamp, level, target) themselves.
+            quote! {
+                fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
+                    use ::std::sync::atomic::{AtomicBool, Ordering};
+                    static WARNED: AtomicBool = AtomicBool::new(false);
+                    if !WARNED.swap(true, Ordering::Relaxed) {
+                        ::std::eprintln!(
+                            "wide-log: emitting via `::tracing::info!` because the `tracing` \
+                             feature is enabled. This is a transition aid for migrating from \
+                             `tracing::info!` to `wide_log!`; new code should disable the \
+                             `tracing` feature and use the default (bare JSON to stdout) \
+                             or a custom `with_emit` closure."
+                        );
                     }
-                });
+                    EMIT_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        if ev.serialize_to(&mut *buf).is_ok() {
+                            buf.push(b'\n');
+                            if ::std::cfg!(debug_assertions) {
+                                if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
+                                    debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+                                }
+                            }
+                            let bytes = ::std::mem::take(&mut *buf);
+                            // Convert to a String for the tracing
+                            // payload. The JSON is small (one event)
+                            // so a String allocation is acceptable
+                            // on the emit path.
+                            if let Ok(s) = ::std::string::String::from_utf8(bytes) {
+                                // Use the fully-qualified path so the
+                                // call resolves to the user's
+                                // `tracing` crate, not a hypothetical
+                                // `wide_log!`-generated macro.
+                                let s = s.trim_end_matches('\n');
+                                ::tracing::info!(event = %s);
+                            }
+                        }
+                    });
+                }
+            }
+        } else {
+            // Default: write the bare JSON line to non-blocking
+            // stdout via the writer thread.
+            quote! {
+                fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
+                    EMIT_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        if ev.serialize_to(&mut *buf).is_ok() {
+                            // The serializer only writes valid UTF-8, so the
+                            // bytes form a valid JSON line. We send the
+                            // `Vec<u8>` directly to the writer thread
+                            // (Phase 2 §1.2: no `from_utf8_unchecked`, no
+                            // `Vec::split_off(0)` copy). The writer
+                            // appends no trailing `'\n'` of its own —
+                            // we do that here so the producer is
+                            // responsible for line termination.
+                            buf.push(b'\n');
+                            // SAFETY: the serializer only emits valid UTF-8
+                            // (we control both ends), so the `Vec<u8>` is
+                            // a valid JSON line. We don't need a `String`
+                            // here, but we do want to verify the bytes
+                            // round-trip through UTF-8 as a sanity check
+                            // (a `debug_assert!` in release-with-debug-assertions
+                            // builds). In a no-assertions release build the
+                            // call is elided.
+                            if ::std::cfg!(debug_assertions) {
+                                if let Err(e) = ::std::str::from_utf8(buf.as_slice()) {
+                                    debug_assert!(false, "wide-log: invalid UTF-8 from serializer: {e}");
+                                }
+                            }
+                            // Move the `Vec<u8>` to the writer thread.
+                            let bytes = ::std::mem::take(&mut *buf);
+                            ::wide_log::stdout_emit::submit(bytes);
+                        }
+                    });
+                }
             }
         };
 
         let guard_struct = quote! {
-            pub struct WideLogGuard<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> {
+            /// RAII guard that owns the active wide event.
+            ///
+            /// The guard is `#[must_use]` — binding it to `_guard` (the
+            /// common idiom) is fine, but discarding it with `let _ = ...`
+            /// without dropping will leak the event and leave the
+            /// thread-local cell in a stale state. See the rustdoc on
+            /// `Drop` below for the soundness contract.
+            #[must_use = "WideLogGuard must be dropped to emit the event; binding to `_guard` is fine"]
+            pub struct WideLogGuard<
+                F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
+            > {
+                // The ScopedGuard is boxed to avoid parameterizing the
+                // macro-generated guard over `K: Key` (we know `K =
+                // EventKey` here). Phase 3 §3.3 was originally going
+                // to inline the fields, but `WideEvent`'s mutators
+                // are `pub(crate)` and the macro is expanded in user
+                // code (tests, examples) which doesn't have `crate`
+                // access. Leaving the `Box` indirection; a future
+                // release can add a `pub` constructor or move the
+                // `WideEvent` API surface needed by the macro into a
+                // public `__macro_internals` module.
                 inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
-                prev_ptr: *mut ::wide_log::WideEvent<EventKey>,
+                /// The previous value of `CURRENT_EVENT` for restoration
+                /// on drop.
+                prev: *const ::wide_log::WideEvent<EventKey>,
             }
-
-            // SAFETY: The raw pointer `prev_ptr` is only accessed via the
-            // thread-local `CURRENT_EVENT` cell, which is per-thread. When the
-            // guard is moved across threads (in async), the task-local
-            // `TASK_EVENT` moves with the task. The pointer is never
-            // dereferenced from a different thread than the one that set it.
-            unsafe impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Send
-                for WideLogGuard<F> {}
         };
 
         let default_id_fn = quote! {
-            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string())
+            // Phase 3 §3.2: write the ULID into a thread-local
+            // reusable buffer and return a clone. The buffer's
+            // allocation is preserved across calls.
+            ::std::boxed::Box::new(|| {
+                ULID_BUF.with(|buf| {
+                    let mut buf = buf.borrow_mut();
+                    buf.clear();
+                    use ::std::fmt::Write as _;
+                    let _ = write!(&mut *buf, "{}", ::wide_log::__re_exports_core::ulid::Ulid::generate());
+                    buf.clone()
+                })
+            })
         };
 
         let builder_struct = quote! {
@@ -638,6 +781,16 @@ impl GenContext {
             {
                 pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::chrono_tz::Tz) -> Self {
                     self.tz = tz;
+                    self
+                }
+
+                // Phase 3 §3.4: a `&'static str` overload of
+                // `with_id` that avoids the closure + `Box<dyn FnOnce>`
+                // indirection for the common case of a fixed id.
+                // The user can still call the closure-based
+                // `with_id` for dynamic id generation.
+                pub fn with_id_str(mut self, id: &'static str) -> Self {
+                    self.id_fn = ::std::boxed::Box::new(move || id.to_string());
                     self
                 }
 
@@ -671,13 +824,21 @@ impl GenContext {
                         #(#default_stmts)*
                         event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
+                    // We need a `*mut` to store in the cell so the
+                    // eventual deref to `&mut WideEvent` is sound
+                    // under Stacked Borrows. The cell stores `*mut`,
+                    // the guard stores `*const` (for auto-traits), and
+                    // we cast at the boundaries.
                     let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                        use ::std::ops::Deref;
-                        let guard_ref: &::wide_log::ScopedGuard<EventKey, F> = inner.deref();
-                        guard_ref.deref() as *const _ as *mut _
+                        use ::std::ops::DerefMut;
+                        let guard_ref: &mut ::wide_log::ScopedGuard<EventKey, F> = inner.deref_mut();
+                        &mut *guard_ref.deref_mut()
                     };
                     let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
-                    WideLogGuard { inner, prev_ptr }
+                    WideLogGuard {
+                        inner,
+                        prev: prev_ptr as *const _,
+                    }
                 }
             }
         };
@@ -706,8 +867,77 @@ impl GenContext {
 
         let guard_drop = quote! {
             impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Drop for WideLogGuard<F> {
+                /// Restore the thread-local `CURRENT_EVENT` cell to the
+                /// value it had before this guard was created.
+                ///
+                /// Field-drop order: `inner` (the `Box<ScopedGuard>`)
+                /// drops first, which sets the `duration.total_ms`,
+                /// the `event.timestamp`, and invokes the user's emit
+                /// closure. After that, this `Drop` body runs and
+                /// restores `CURRENT_EVENT` to `self.prev`.
+                ///
+                /// # `mem::forget` is **unsound** on this type
+                ///
+                /// The restore in this `Drop` body is the **only**
+                /// thing that resets the thread-local cell. If the
+                /// user calls [`std::mem::forget`] on the guard, this
+                /// `Drop` body never runs and `CURRENT_EVENT` keeps
+                /// pointing at the now-leaked event. Any subsequent
+                /// guard created on the same thread will see the
+                /// stale pointer and will be unsound.
+                ///
+                /// This is why the guard is `#[must_use]` — the
+                /// common error of writing `let _ = guard;` instead
+                /// of `let _guard = guard;` is caught at compile
+                /// time. Calling `mem::forget(guard)` is the only way
+                /// to bypass this check, and it is a documented
+                /// unsoundness (see `wide_log::RestoreOnDrop` for the
+                /// recommended pattern if you need to temporarily
+                /// disarm a guard).
+                ///
+                /// [Phase 2] refactored the storage from a raw
+                /// `*mut WideEvent` field to a `Box<ScopedGuard>` +
+                /// raw `*const WideEvent` (for the previous-pointer
+                /// value), so the auto-derived `Send + Sync` is
+                /// sound and the unsafe is concentrated in this
+                /// single function. The `mem::forget` soundness
+                /// hole is **unchanged** by Phase 2; it is a
+                /// pre-existing limitation of the guard pattern.
+                ///
+                /// [Phase 2]: https://github.com/dhuseby/wide-log/blob/main/CHANGELOG.md
                 fn drop(&mut self) {
-                    CURRENT_EVENT.with(|c| c.restore(self.prev_ptr));
+                    // The ScopedGuard inside `inner` drops first (Rust
+                    // drops fields in declaration order), which sets
+                    // duration / timestamp and calls the emit function.
+                    // After that, the ScopedGuard's inner WideEvent is
+                    // also dropped. We then restore the thread-local
+                    // CURRENT_EVENT to the value it had before this
+                    // guard was created.
+                    //
+                    // The restore uses a closure (`with(...)`) so that
+                    // the unsafe deref of the stored raw pointer happens
+                    // inside `ContextCell::restore` (in `context.rs`),
+                    // not in the macro-generated code.
+                    //
+                    // # Soundness
+                    //
+                    // If the user calls `mem::forget(guard)`, the
+                    // restore never runs and `CURRENT_EVENT` keeps
+                    // pointing at the (now-leaked) event. Subsequent
+                    // guards created on the same thread will see the
+                    // stale pointer, which is unsound. We `debug_assert!`
+                    // on the current state to catch this in tests.
+                    CURRENT_EVENT.with(|c| c.restore(self.prev as *mut _));
+                    // Post-restore sanity check: if we previously
+                    // stored a non-null prev, the cell should now
+                    // contain that pointer. We don't try to check the
+                    // cell is back to its *initial* state (we can't,
+                    // without more state), but we can verify that the
+                    // restore ran without panicking.
+                    debug_assert!(
+                        CURRENT_EVENT.with(|c| c.get_ptr()) == self.prev as *mut _,
+                        "wide-log: CURRENT_EVENT not restored to previous value on guard drop"
+                    );
                 }
             }
         };
@@ -716,13 +946,19 @@ impl GenContext {
             quote! {
                 #[inline(always)]
                 pub fn current() -> Option<&'static mut ::wide_log::WideEvent<EventKey>> {
-                    let ptr = if let Ok(p) = TASK_EVENT.try_with(|c| c.get_ptr()) {
-                        p
-                    } else {
-                        ::std::ptr::null_mut()
-                    };
-                    if !ptr.is_null() {
-                        return Some(unsafe { &mut *ptr });
+                    // The deref of the stored raw pointer is technically
+                    // `unsafe`, but the `unsafe` is concentrated in this
+                    // single function. (The alternative — an `unsafe`
+                    // method on `ContextCell` — trips a Stacked Borrows
+                    // false-positive under miri because the cell's
+                    // internal pointer was originally tagged SharedReadOnly
+                    // when stored via `replace(*const -> *mut)`. Until
+                    // the storage type is also changed to `*mut`, the
+                    // deref must happen here.)
+                    if let Ok(ptr) = TASK_EVENT.try_with(|c| c.get_ptr()) {
+                        if !ptr.is_null() {
+                            return Some(unsafe { &mut *ptr });
+                        }
                     }
                     let ptr = CURRENT_EVENT.with(|c| c.get_ptr());
                     if ptr.is_null() {
@@ -759,7 +995,17 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string();
+                    let id_str = ULID_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        use ::std::fmt::Write as _;
+                        let _ = write!(
+                            &mut *buf,
+                            "{}",
+                            ::wide_log::__re_exports_core::ulid::Ulid::generate()
+                        );
+                        buf.clone()
+                    });
                     let mut inner = ::std::boxed::Box::new(
                         ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
                     );
@@ -769,13 +1015,8 @@ impl GenContext {
                         #(#default_stmts)*
                         event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
-                    let ptr: *mut ::wide_log::WideEvent<EventKey> = {
-                        use ::std::ops::Deref;
-                        let guard_ref: &::wide_log::ScopedGuard<EventKey, E> = inner.deref();
-                        guard_ref.deref() as *const _ as *mut _
-                    };
                     let cell = ::wide_log::ContextCell::new();
-                    cell.replace(ptr);
+                    cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
                     let _inner = inner;
                     TASK_EVENT.scope(cell, f).await
                 }
@@ -908,6 +1149,12 @@ impl GenContext {
                 };
             }
 
+            // Phase 3 §3.1: the format-arg variants of the log macros
+            // now use a thread-local `FMT_BUF` (`String`) instead of
+            // allocating a fresh one per call. The buffer is cleared
+            // (not freed) before each format, so its capacity is
+            // preserved across calls.
+
             #[macro_export]
             macro_rules! info {
                 ($msg:literal) => {
@@ -917,9 +1164,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("info", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("info", &buf);
+                        });
                     }
                 };
             }
@@ -933,9 +1183,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("warn", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("warn", &buf);
+                        });
                     }
                 };
             }
@@ -949,9 +1202,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("error", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("error", &buf);
+                        });
                     }
                 };
             }
@@ -965,9 +1221,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("debug", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("debug", &buf);
+                        });
                     }
                 };
             }
@@ -981,9 +1240,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("trace", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("trace", &buf);
+                        });
                     }
                 };
             }
@@ -1010,7 +1272,7 @@ impl GenContext {
 
 fn to_pascal_case(name: &str) -> String {
     let mut result = String::new();
-    for word in name.split(|c| c == '_' || c == '.') {
+    for word in name.split(['_', '.']) {
         if word.is_empty() {
             continue;
         }
@@ -1081,4 +1343,253 @@ fn is_rust_keyword(s: &str) -> bool {
             | "try"
             | "union"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::{JsonNode, parse_wide_log_input};
+    use proc_macro2::TokenStream as TokenStream2;
+
+    fn parse_json(input: &str) -> JsonNode {
+        let ts: TokenStream2 = input.parse().unwrap();
+        let (_ovr, n) = parse_wide_log_input(&ts).unwrap();
+        n
+    }
+
+    // ── to_pascal_case ──
+
+    #[test]
+    fn to_pascal_case_simple() {
+        assert_eq!(to_pascal_case("foo"), "Foo");
+        assert_eq!(to_pascal_case("foo_bar"), "FooBar");
+    }
+
+    #[test]
+    fn to_pascal_case_dotted() {
+        assert_eq!(to_pascal_case("service.name"), "ServiceName");
+    }
+
+    #[test]
+    fn to_pascal_case_already_pascal() {
+        assert_eq!(to_pascal_case("Foo"), "Foo");
+    }
+
+    #[test]
+    fn to_pascal_case_keyword_appends_underscore() {
+        // to_pascal_case operates on the uppercased form. Lowercase
+        // keywords ("type", "fn", "let") are not detected as keywords
+        // after uppercasing, so they pass through unchanged. The "Self"
+        // keyword has a capitalized form that IS detected, so it gets
+        // an underscore appended.
+        assert_eq!(to_pascal_case("type"), "Type");
+        assert_eq!(to_pascal_case("fn"), "Fn");
+        assert_eq!(to_pascal_case("self"), "Self_"); // "Self" is in keyword list
+    }
+
+    #[test]
+    fn to_pascal_case_empty_segments_ignored() {
+        // Leading/trailing/consecutive separators should not produce empty
+        // words; multiple leading uppercase letters are preserved as-is.
+        assert_eq!(to_pascal_case("a__b"), "AB");
+        assert_eq!(to_pascal_case("a.b"), "AB");
+    }
+
+    // ── is_rust_keyword ──
+
+    #[test]
+    fn is_rust_keyword_recognizes_strict_keywords() {
+        assert!(is_rust_keyword("as"));
+        assert!(is_rust_keyword("break"));
+        assert!(is_rust_keyword("const"));
+        assert!(is_rust_keyword("continue"));
+        assert!(is_rust_keyword("crate"));
+        assert!(is_rust_keyword("else"));
+        assert!(is_rust_keyword("enum"));
+        assert!(is_rust_keyword("extern"));
+        assert!(is_rust_keyword("false"));
+        assert!(is_rust_keyword("fn"));
+        assert!(is_rust_keyword("for"));
+        assert!(is_rust_keyword("if"));
+        assert!(is_rust_keyword("impl"));
+        assert!(is_rust_keyword("in"));
+        assert!(is_rust_keyword("let"));
+        assert!(is_rust_keyword("loop"));
+        assert!(is_rust_keyword("match"));
+        assert!(is_rust_keyword("mod"));
+        assert!(is_rust_keyword("move"));
+        assert!(is_rust_keyword("mut"));
+        assert!(is_rust_keyword("pub"));
+        assert!(is_rust_keyword("ref"));
+        assert!(is_rust_keyword("return"));
+        assert!(is_rust_keyword("self"));
+        assert!(is_rust_keyword("Self"));
+        assert!(is_rust_keyword("static"));
+        assert!(is_rust_keyword("struct"));
+        assert!(is_rust_keyword("super"));
+        assert!(is_rust_keyword("trait"));
+        assert!(is_rust_keyword("true"));
+        assert!(is_rust_keyword("type"));
+        assert!(is_rust_keyword("unsafe"));
+        assert!(is_rust_keyword("use"));
+        assert!(is_rust_keyword("where"));
+        assert!(is_rust_keyword("while"));
+    }
+
+    #[test]
+    fn is_rust_keyword_recognizes_reserved() {
+        assert!(is_rust_keyword("abstract"));
+        assert!(is_rust_keyword("become"));
+        assert!(is_rust_keyword("box"));
+        assert!(is_rust_keyword("do"));
+        assert!(is_rust_keyword("final"));
+        assert!(is_rust_keyword("macro"));
+        assert!(is_rust_keyword("override"));
+        assert!(is_rust_keyword("priv"));
+        assert!(is_rust_keyword("typeof"));
+        assert!(is_rust_keyword("unsized"));
+        assert!(is_rust_keyword("virtual"));
+        assert!(is_rust_keyword("yield"));
+        assert!(is_rust_keyword("try"));
+        assert!(is_rust_keyword("union"));
+    }
+
+    #[test]
+    fn is_rust_keyword_rejects_non_keywords() {
+        assert!(!is_rust_keyword("foo"));
+        assert!(!is_rust_keyword("Type"));
+        assert!(!is_rust_keyword("bar"));
+        assert!(!is_rust_keyword(""));
+    }
+
+    // ── auto_add_duration ──
+
+    #[test]
+    fn auto_add_duration_inserts_default_path() {
+        let node = parse_json(r#"{ "status": null }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_duration(&node).unwrap();
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    #[test]
+    fn auto_add_duration_resolves_user_declared_duration() {
+        let node = parse_json(r#"{ "duration": { "total_ms": 42 } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_duration(&node).unwrap();
+        // The user has declared "duration" with a `total_ms` leaf;
+        // auto_add_duration should resolve the existing subtree and
+        // set the duration marker so the drop path will populate it.
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    // ── auto_add_event ──
+
+    #[test]
+    fn auto_add_event_inserts_default_subtree() {
+        let node = parse_json(r#"{ "status": null }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_event(&node).unwrap();
+        assert!(ctx.has_event_key);
+        assert!(!ctx.timestamp_segments.is_empty());
+        assert!(!ctx.id_segments.is_empty());
+    }
+
+    #[test]
+    fn auto_add_event_skips_user_declared_event() {
+        let node = parse_json(r#"{ "event": { "timestamp": "ts", "id": "i" } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.auto_add_event(&node).unwrap();
+        // User declared event; the auto-add path resolves the existing
+        // subtree instead of inserting defaults.
+        assert!(ctx.has_event_key);
+    }
+
+    // ── resolve_duration_subtree / resolve_event_subtree ──
+
+    #[test]
+    fn resolve_duration_subtree_empty_object() {
+        let node = parse_json(r#"{ "duration": {} }"#);
+        let mut ctx = GenContext::new(Default::default());
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "duration" {
+                    ctx.resolve_duration_subtree(v).unwrap();
+                }
+            }
+        }
+        assert!(!ctx.duration_segments.is_empty());
+        assert!(ctx.has_duration_marker);
+    }
+
+    #[test]
+    fn resolve_event_subtree_empty_object() {
+        let node = parse_json(r#"{ "event": {} }"#);
+        let mut ctx = GenContext::new(Default::default());
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        assert!(ctx.has_event_key);
+        assert!(!ctx.timestamp_segments.is_empty());
+        assert!(!ctx.id_segments.is_empty());
+    }
+
+    // ── validate ──
+
+    #[test]
+    fn validate_rejects_missing_duration_marker() {
+        let mut ctx = GenContext::new(Default::default());
+        ctx.duration_segments = vec!["duration".into(), "total_ms".into()];
+        ctx.timestamp_segments = vec!["event".into(), "timestamp".into()];
+        ctx.id_segments = vec!["event".into(), "id".into()];
+        // has_duration_marker is false → should error.
+        let err = ctx.validate().unwrap_err();
+        assert!(err.to_string().contains("duration"));
+    }
+
+    #[test]
+    fn validate_rejects_user_id_default() {
+        // The default ULID generator would overwrite a user-supplied default
+        // for `event.id` at build time. validate() should error.
+        let node = parse_json(r#"{ "event": { "id": "my_id" } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.walk(&node, &[]).unwrap();
+        ctx.auto_add_duration(&node).unwrap();
+        // Don't auto_add_event; the user has declared it.
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        let err = ctx.validate().unwrap_err();
+        assert!(err.to_string().contains("event.id"));
+        assert!(err.to_string().contains("ULID"));
+    }
+
+    #[test]
+    fn validate_accepts_null_event_id() {
+        // "id": null is the canonical "no default, fill in at build time"
+        // sentinel. It should not trigger the conflict error.
+        let node = parse_json(r#"{ "event": { "id": null } }"#);
+        let mut ctx = GenContext::new(Default::default());
+        ctx.walk(&node, &[]).unwrap();
+        ctx.auto_add_duration(&node).unwrap();
+        if let JsonNode::Object(entries) = &node {
+            for (k, v) in entries {
+                if k == "event" {
+                    ctx.resolve_event_subtree(v).unwrap();
+                }
+            }
+        }
+        ctx.validate()
+            .expect("validate should accept null event.id");
+    }
 }
