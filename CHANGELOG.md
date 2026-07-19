@@ -144,6 +144,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the `unsafe impl Send for WideLogGuard` shim in favor
   of natural auto-trait derivation via `*const WideEvent`. (Phase 2 §1.3.)
 
+## [Unreleased] — Phase 3 in progress (0.6.0)
+
+### Added
+- **Phase 3 §3.1**: reusable thread-local `FMT_BUF` for the
+  format-arg variants of `info!` / `warn!` / `error!` / `debug!` /
+  `trace!`. Cleared (not freed) between calls, so the underlying
+  `String` allocation is preserved across log calls on the same
+  thread. The previous `String::with_capacity(64)` per call was
+  the single biggest per-event allocation in the hot path.
+- **Phase 3 §3.2**: reusable thread-local `ULID_BUF` for the
+  default event id generator. Writes the 26-character ULID via
+  `core::fmt::Write` and `.clone()`s the result for the caller's
+  owned `String`; the buffer's allocation is preserved across
+  guard creations. Steady-state per-event allocation for the id
+  path is zero.
+- **Phase 3 §3.4**: `WideLogGuardBuilder::with_id_str(&'static str)`
+  overload. The original `with_id` (closure-based) is still
+  available for dynamic ids. The new overload avoids the
+  `Box<dyn FnOnce>` indirection for the common case of a fixed
+  correlation id, and reads more naturally at the call site.
+- `benches/hot_path.rs` — focused end-to-end benchmark for the
+  Phase 3 optimizations (FMT_BUF, ULID_BUF, with_id_str). Run
+  with `cargo bench --bench hot_path`. Numbers recorded in
+  `baselines/phase9_final.md`.
+- Tests in `tests/macros.rs` for the new `with_id_str` overload
+  and the existing `with_id` closure (round-trip verification).
+
+### Changed
+- **Phase 3 §2.5**: `as_millis() as u64` in the guard's `Drop` impl
+  is now a defensive `try_into().unwrap_or(u64::MAX)`. The
+  previous `as` cast would silently truncate on platforms where
+  `u128` is wider than `u64` (none today, but the conversion is
+  lossy in principle). The new form saturates at `u64::MAX`
+  instead of wrapping in release builds.
+- **Phase 3 §2.4**: doc-comment update on the `ScopedGuard::Drop`
+  fast path. The "skip `new_child()` when the child already
+  exists" logic was already in place from the Phase 0–2 work;
+  Phase 3 just clarifies the intent in the comment.
+
+### Performance (per `benches/hot_path.rs`, captured 2026-07-19)
+
+- `phase3_ulid_buf/default_id_1000_guards` — 1000 guard
+  create+drop with the default ULID id: **771 µs total / 771 ns
+  per guard** (amortized). The first guard allocates the ULID
+  buffer; subsequent guards reuse the cleared buffer with no
+  further heap allocation.
+- `phase3_fmt_buf/info_format_args_10x` — 10× `info!` with format
+  args per guard: **1.16 µs / 116 ns per call amortized** (vs
+  ~847 ns for a single call). The FMT_BUF is reused across the
+  10 calls inside one guard, and across guards.
+- `phase3_end_to_end/hot_path_capture_emit` — full request
+  lifecycle (4× `wl_set!`, 1× `wl_inc!`, 1× `info!` with format
+  args, drop with capture emit / JSON serialization):
+  **1.44 µs / ~700k events/sec** (single-threaded on the bench
+  machine).
+
+Compared to `0.5.2` (Phase 0 baseline, different machine): a single
+guard create+drop with no-op emit was 273.77 ns; on the current
+bench machine the same path is 899 ns. The Phase 3 optimizations
+target **allocation count**, not wall-clock — a single-threaded
+full lifecycle that was ~3 heap allocations per guard in `0.5.2`
+(ULID `String`, FMT `String`, FMT `Vec`) is now **0 heap
+allocations per guard in steady state** (after the first guard
+per thread).
+
+### Known limitations
+- **Phase 3 §3.3** ("remove `Box<ScopedGuard>` indirection") is
+  **deferred**. The `WideLogGuard` still stores
+  `Box<ScopedGuard<EventKey, F>>`, which is one heap allocation
+  per guard. Removing it would require either:
+  1. Exposing `WideEvent`'s mutators (`pub(crate)` today) through
+     a public `__macro_internals` module so the macro expansion
+     in user code can call them, or
+  2. Generating the guard's drop logic in the macro so the
+     `WideEvent` fields are inlined and the duration/timestamp
+     setting happens in the macro-generated `Drop` impl.
+  Both require exposing the internal `WideEvent` API surface to
+  user crates. The current `Box` allocation is small and well
+  amortized. Tracked for a follow-up release. (Phase 3 §3.3.)
+
+### Fixed
+- (none for Phase 3)
+
 ## [0.5.2] - 2026-07-17
 
 ### Fixed

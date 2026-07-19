@@ -626,3 +626,37 @@ fn emit_buf_handles_increasing_event_sizes() {
         assert_eq!(s.len(), size, "size={size}");
     }
 }
+
+// ---- Phase 3 §3.4: with_id_str overload ----
+
+#[test]
+fn with_id_str_overrides_event_id() {
+    // The `with_id_str(&'static str)` overload sets the event id
+    // to a fixed value. Useful for tracing propagation from an
+    // upstream service or for testing.
+    let (slot, emit) = capture();
+    let _guard = WideLogGuard::builder()
+        .with_id_str("my-correlation-id-1234")
+        .with_emit(emit)
+        .build();
+    drop(_guard);
+
+    let json = slot.lock().unwrap().clone().unwrap();
+    let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+    assert_eq!(parsed["event"]["id"], "my-correlation-id-1234");
+}
+
+#[test]
+fn with_id_closure_still_works() {
+    // The original `with_id` (closure-based) still works.
+    let (slot, emit) = capture();
+    let _guard = WideLogGuard::builder()
+        .with_id(|| "dyn-id".to_string())
+        .with_emit(emit)
+        .build();
+    drop(_guard);
+
+    let json = slot.lock().unwrap().clone().unwrap();
+    let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
+    assert_eq!(parsed["event"]["id"], "dyn-id");
+}

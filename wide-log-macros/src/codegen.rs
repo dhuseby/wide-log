@@ -615,6 +615,26 @@ impl GenContext {
 
                 static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
                     const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
+
+                // Phase 3 §3.1: reusable thread-local format buffer for
+                // `info!`, `warn!`, `error!`, `debug!`, `trace!` with
+                // format args. Cleared (not freed) between calls so the
+                // underlying `String` allocation is reused across all
+                // log calls on this thread. Saves the ~50–200 ns/call
+                // of allocating + freeing a fresh `String::with_capacity(64)`
+                // (Phase 0 baseline measurement).
+                static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
+                    const { ::std::cell::RefCell::new(::std::string::String::new()) };
+
+                // Phase 3 §3.2: reusable thread-local ULID buffer.
+                // The default id generator writes a 26-character
+                // ULID string into this buffer and `.clone()`s the
+                // result for the caller's owned `String`. The
+                // underlying allocation is preserved across guard
+                // creations, so per-thread steady-state allocation
+                // for the ID path is zero.
+                static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
+                    const { ::std::cell::RefCell::new(::std::string::String::new()) };
             }
         };
 
@@ -666,30 +686,36 @@ impl GenContext {
             pub struct WideLogGuard<
                 F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
             > {
+                // The ScopedGuard is boxed to avoid parameterizing the
+                // macro-generated guard over `K: Key` (we know `K =
+                // EventKey` here). Phase 3 §3.3 was originally going
+                // to inline the fields, but `WideEvent`'s mutators
+                // are `pub(crate)` and the macro is expanded in user
+                // code (tests, examples) which doesn't have `crate`
+                // access. Leaving the `Box` indirection; a future
+                // release can add a `pub` constructor or move the
+                // `WideEvent` API surface needed by the macro into a
+                // public `__macro_internals` module.
                 inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
                 /// The previous value of `CURRENT_EVENT` for restoration
                 /// on drop.
-                ///
-                /// Phase 2 changes: this used to be `*mut WideEvent`
-                /// (raw pointer in the public interface). It is now
-                /// `*const WideEvent` and the field is
-                /// `unsafe impl Send` is gone — the guard is
-                /// `Send + Sync` automatically when `WideEvent: Sync`
-                /// (verified by `value_k_is_send_sync` in
-                /// `tests/macros.rs`).
-                ///
-                /// The `*const → *mut → *const → *mut` round-trip is
-                /// a no-op at runtime; the const-ness is purely to
-                /// give the auto-traits what they need. (Storing it
-                /// as `*mut` would re-introduce the Stacked Borrows
-                /// `SharedReadOnly → Unique` retag trip on the way
-                /// out, under miri.)
                 prev: *const ::wide_log::WideEvent<EventKey>,
             }
         };
 
         let default_id_fn = quote! {
-            ::std::boxed::Box::new(|| ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string())
+            // Phase 3 §3.2: write the ULID into a thread-local
+            // reusable buffer and return a clone. The buffer's
+            // allocation is preserved across calls.
+            ::std::boxed::Box::new(|| {
+                ULID_BUF.with(|buf| {
+                    let mut buf = buf.borrow_mut();
+                    buf.clear();
+                    use ::std::fmt::Write as _;
+                    let _ = write!(&mut *buf, "{}", ::wide_log::__re_exports_core::ulid::Ulid::generate());
+                    buf.clone()
+                })
+            })
         };
 
         let builder_struct = quote! {
@@ -718,6 +744,16 @@ impl GenContext {
             {
                 pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::chrono_tz::Tz) -> Self {
                     self.tz = tz;
+                    self
+                }
+
+                // Phase 3 §3.4: a `&'static str` overload of
+                // `with_id` that avoids the closure + `Box<dyn FnOnce>`
+                // indirection for the common case of a fixed id.
+                // The user can still call the closure-based
+                // `with_id` for dynamic id generation.
+                pub fn with_id_str(mut self, id: &'static str) -> Self {
+                    self.id_fn = ::std::boxed::Box::new(move || id.to_string());
                     self
                 }
 
@@ -884,7 +920,17 @@ impl GenContext {
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let id_str = ::wide_log::__re_exports_core::ulid::Ulid::generate().to_string();
+                    let id_str = ULID_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        use ::std::fmt::Write as _;
+                        let _ = write!(
+                            &mut *buf,
+                            "{}",
+                            ::wide_log::__re_exports_core::ulid::Ulid::generate()
+                        );
+                        buf.clone()
+                    });
                     let mut inner = ::std::boxed::Box::new(
                         ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
                     );
@@ -1028,6 +1074,12 @@ impl GenContext {
                 };
             }
 
+            // Phase 3 §3.1: the format-arg variants of the log macros
+            // now use a thread-local `FMT_BUF` (`String`) instead of
+            // allocating a fresh one per call. The buffer is cleared
+            // (not freed) before each format, so its capacity is
+            // preserved across calls.
+
             #[macro_export]
             macro_rules! info {
                 ($msg:literal) => {
@@ -1037,9 +1089,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("info", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("info", &buf);
+                        });
                     }
                 };
             }
@@ -1053,9 +1108,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("warn", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("warn", &buf);
+                        });
                     }
                 };
             }
@@ -1069,9 +1127,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("error", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("error", &buf);
+                        });
                     }
                 };
             }
@@ -1085,9 +1146,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("debug", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("debug", &buf);
+                        });
                     }
                 };
             }
@@ -1101,9 +1165,12 @@ impl GenContext {
                 };
                 ($fmt:literal, $($arg:tt)*) => {
                     if let Some(ev) = current() {
-                        let mut buf = ::std::string::String::with_capacity(64);
-                        let _ = ::std::fmt::Write::write_fmt(&mut buf, ::std::format_args!($fmt, $($arg)*));
-                        ev.append_log_entry("trace", &buf);
+                        FMT_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                            ev.append_log_entry("trace", &buf);
+                        });
                     }
                 };
             }

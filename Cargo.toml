@@ -48,6 +48,10 @@ criterion = { version = "0", default-features = false, features = ["cargo_bench_
 name = "core"
 harness = false
 
+[[bench]]
+name = "hot_path"
+harness = false
+
 [[test]]
 name = "async"
 required-features = ["tokio"]
