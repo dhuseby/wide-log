@@ -119,6 +119,16 @@ impl<K: Key> WideEvent<K> {
     pub fn add_path<V: Into<Value<K>>>(&mut self, path: &[K], value: V) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
         let value = value.into();
+        // Phase 5 §5.3: inline the common 2-segment case. This
+        // avoids a loop + bounds check for the most common
+        // pattern (e.g. "duration.total_ms", "event.id",
+        // "service.name"). For longer paths we fall back to the
+        // generic `descend_mut` loop.
+        if path.len() == 2 {
+            let target = self.object(path[0]);
+            target.add(path[1], value);
+            return;
+        }
         if path.len() == 1 {
             self.add(path[0], value);
             return;
@@ -211,6 +221,12 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn inc_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
+        // Phase 5 §5.3: inline the 1- and 2-segment cases.
+        if path.len() == 2 {
+            let target = self.object(path[0]);
+            target.inc(path[1]);
+            return;
+        }
         if path.len() == 1 {
             self.inc(path[0]);
             return;
@@ -222,6 +238,11 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn dec_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
+        if path.len() == 2 {
+            let target = self.object(path[0]);
+            target.dec(path[1]);
+            return;
+        }
         if path.len() == 1 {
             self.dec(path[0]);
             return;
@@ -233,6 +254,11 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn add_n_path(&mut self, path: &[K], n: i64) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
+        if path.len() == 2 {
+            let target = self.object(path[0]);
+            target.add_n(path[1], n);
+            return;
+        }
         if path.len() == 1 {
             self.add_n(path[0], n);
             return;

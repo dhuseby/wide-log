@@ -320,6 +320,52 @@ For maximum durability, use `FlushPolicy::per_line()`.
 ### Fixed
 - (none for Phase 4)
 
+## [Unreleased] — Phase 5 in progress (0.6.0)
+
+### Added
+- (none for Phase 5)
+
+### Changed
+- The 1- and 2-segment fast paths in `WideEvent::add_path`,
+  `inc_path`, `dec_path`, and `add_n_path` are now inlined, avoiding
+  the per-call `descend_mut` recursion + `Vec` allocation for the
+  common case of a flat top-level key or a single nested object.
+- Replaced 4 non-test `.unwrap()` calls in
+  `wide-log-macros/src/codegen.rs` (in `auto_add_duration`,
+  `auto_add_event`, and the two branches of `resolve_event_subtree`)
+  with a structural `match` on the `entries.iter().find(...)` result.
+  The `None` arm of each `match` is the original "key not present,
+  insert default" path (now expressed as a real branch instead of
+  a pre-check + `unwrap`); the `Some` arm binds the value directly
+  and passes it to `resolve_*` / `walk` without a re-borrow. The
+  pre-existing `iter().any(...)` scan was removed in the same
+  change since the `find` already does the lookup.
+- Hot-path `unwrap`/`expect` audit: `src/` is now free of
+  `unwrap`/`expect` outside `#[cfg(test)]` and the one `unreachable!()`
+  in `src/wide_event.rs:103`, which is a type-invariant assertion on
+  the `new_child` fast path (the value was just written by the line
+  above, so the `Object` discriminant cannot be anything else). The
+  macro library is also `unwrap`/`expect`-free outside `#[cfg(test)]`.
+  Library `to_json()` returns `Result<String, Error>` so user
+  `with_emit` closures can choose their own error policy.
+
+### Known limitations
+- **Phase 5 task 1 (FxHash content-hash dedup of `KEY_STRS` / `KEYS`
+  via `LazyLock<FxHashMap>`) is deferred.** The plan called for
+  changing `Key::KEY_STRS` from a `const &[&str]` to a `static` so
+  the macro could hash a content string to a `u16` key index. This
+  is a breaking change to the `Key` trait (the `KEY_STRS` associated
+  constant is part of the public surface and several downstream
+  tests depend on its `const` shape) and was punted from 0.6.0.
+  To revisit: expose a `Key::intern_keys` hook on the trait and
+  have the macro emit a `static` lookup table per invocation.
+- **Phase 5 task 2 (new `// SAFETY:` comment on the `current()`
+  `unsafe` block) is deferred** with task 1, since both touch the
+  same code site in the macro.
+
+### Fixed
+- (none for Phase 5)
+
 ## [0.5.2] - 2026-07-17
 
 ### Fixed

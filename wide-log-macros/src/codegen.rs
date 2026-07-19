@@ -209,16 +209,13 @@ impl GenContext {
     fn auto_add_duration(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_duration = entries.iter().any(|(k, _)| *k == self.builtin_duration);
-                if !has_duration {
-                    self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
-                } else {
-                    let duration_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == self.builtin_duration)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.resolve_duration_subtree(duration_node)?;
+                match entries.iter().find(|(k, _)| *k == self.builtin_duration) {
+                    None => {
+                        self.add_duration_subtree(&self.builtin_duration_total_ms.clone());
+                    }
+                    Some((_, v)) => {
+                        self.resolve_duration_subtree(v)?;
+                    }
                 }
             }
             _ => unreachable!(),
@@ -324,16 +321,13 @@ impl GenContext {
     fn auto_add_event(&mut self, root: &JsonNode) -> Result<(), syn::Error> {
         match root {
             JsonNode::Object(entries) => {
-                let has_event = entries.iter().any(|(k, _)| *k == self.builtin_event);
-                if !has_event {
-                    self.add_event_subtree();
-                } else {
-                    let event_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == self.builtin_event)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.resolve_event_subtree(event_node)?;
+                match entries.iter().find(|(k, _)| *k == self.builtin_event) {
+                    None => {
+                        self.add_event_subtree();
+                    }
+                    Some((_, v)) => {
+                        self.resolve_event_subtree(v)?;
+                    }
                 }
             }
             _ => unreachable!(),
@@ -370,36 +364,24 @@ impl GenContext {
                     return Ok(());
                 }
 
-                let has_timestamp = entries.iter().any(|(k, _)| *k == timestamp_str);
-                let has_id = entries.iter().any(|(k, _)| *k == id_str);
+                let ts_node = entries.iter().find(|(k, _)| *k == timestamp_str);
+                let id_node = entries.iter().find(|(k, _)| *k == id_str);
 
-                if !has_timestamp {
+                if let Some((_, ts_node)) = ts_node {
+                    self.walk(ts_node, &[event_seg.clone(), timestamp_str.clone()])?;
+                } else {
                     self.add_key(&timestamp_str);
                     self.add_path(&[event_seg.clone(), timestamp_str.clone()]);
-                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
-                } else {
-                    let ts_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == timestamp_str)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.walk(ts_node, &[event_seg.clone(), timestamp_str.clone()])?;
-                    self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
                 }
+                self.timestamp_segments = vec![event_seg.clone(), timestamp_str.clone()];
 
-                if !has_id {
+                if let Some((_, id_node)) = id_node {
+                    self.walk(id_node, &[event_seg.clone(), id_str.clone()])?;
+                } else {
                     self.add_key(&id_str);
                     self.add_path(&[event_seg.clone(), id_str.clone()]);
-                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
-                } else {
-                    let id_node = entries
-                        .iter()
-                        .find(|(k, _)| *k == id_str)
-                        .map(|(_, v)| v)
-                        .unwrap();
-                    self.walk(id_node, &[event_seg.clone(), id_str.clone()])?;
-                    self.id_segments = vec![event_seg.clone(), id_str.clone()];
                 }
+                self.id_segments = vec![event_seg.clone(), id_str.clone()];
 
                 for (k, v) in entries {
                     if *k != timestamp_str && *k != id_str {
