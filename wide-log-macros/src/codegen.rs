@@ -593,10 +593,17 @@ impl GenContext {
 
         let thread_local = quote! {
             thread_local! {
-                static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
+                // `pub(crate)` so the `#[macro_export]`-ed `info!`/
+                // `warn!`/`error!`/`debug!`/`trace!` macros can reach
+                // these thread-locals from sibling modules of the user
+                // crate (the macros expand at the call site, so a
+                // private `static` would not be visible). `pub` would
+                // leak implementation details to downstream crates;
+                // `pub(crate)` is the right level.
+                pub(crate) static CURRENT_EVENT: ::wide_log::ContextCell<::wide_log::WideEvent<EventKey>> =
                     const { ::wide_log::ContextCell::new() };
 
-                static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
+                pub(crate) static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
                     const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
 
                 // Phase 3 §3.1: reusable thread-local format buffer for
@@ -606,7 +613,7 @@ impl GenContext {
                 // log calls on this thread. Saves the ~50–200 ns/call
                 // of allocating + freeing a fresh `String::with_capacity(64)`
                 // (Phase 0 baseline measurement).
-                static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
+                pub(crate) static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
 
                 // Phase 3 §3.2: reusable thread-local ULID buffer.
@@ -616,7 +623,7 @@ impl GenContext {
                 // underlying allocation is preserved across guard
                 // creations, so per-thread steady-state allocation
                 // for the ID path is zero.
-                static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
+                pub(crate) static ULID_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
             }
         };
@@ -738,6 +745,24 @@ impl GenContext {
                 /// on drop.
                 prev: *const ::wide_log::WideEvent<EventKey>,
             }
+
+            // SAFETY: the `prev` field is only accessed through the
+            // per-thread (or per-task, under the `tokio` feature)
+            // `CURRENT_EVENT` cell. The pointer is never dereferenced
+            // from a different thread than the one that set it. When
+            // the guard moves across threads in async, the task-local
+            // `TASK_EVENT` moves with the task.
+            //
+            // This impl restores the `Send` derivation that was
+            // accidentally lost in the 0.6.0 "eliminate raw pointer"
+            // refactor (the field was changed from `*mut` to `*const`
+            // and the explicit `unsafe impl Send` was removed, but the
+            // auto-trait derivation through `Box<ScopedGuard<F>>` with
+            // the HRTB function-pointer bound does not propagate on
+            // the current toolchain). The safety argument is
+            // unchanged from the previous version.
+            unsafe impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static> Send
+                for WideLogGuard<F> {}
         };
 
         let default_id_fn = quote! {
@@ -1104,11 +1129,23 @@ impl GenContext {
         };
 
         let macros = quote! {
+            // NOTE: all references to the items emitted at the
+            // `wide_log!` call site (`current`, `__wl_resolve_path`,
+            // `FMT_BUF`) must be qualified with `$crate::` so the
+            // macro expansion resolves them at the *defining* crate
+            // (i.e., the crate that invoked `wide_log!`) and not at
+            // the call-site module. Without `$crate::`, the bare
+            // names only resolve when the macro is invoked from the
+            // same module as the `wide_log!` invocation. The 0.6.0
+            // macros omitted the `$crate::` prefix, which broke
+            // cross-module use of the format-arg variants of
+            // `info!`/`warn!`/etc. (E0425: cannot find value
+            // `FMT_BUF` in this scope).
             #[macro_export]
             macro_rules! wl_set {
                 ($path:literal, $value:expr) => {
-                    if let Some(ev) = current() {
-                        ev.add_path(__wl_resolve_path($path), $value);
+                    if let Some(ev) = $crate::current() {
+                        ev.add_path($crate::__wl_resolve_path($path), $value);
                     }
                 };
             }
@@ -1116,8 +1153,8 @@ impl GenContext {
             #[macro_export]
             macro_rules! wl_inc {
                 ($path:literal) => {
-                    if let Some(ev) = current() {
-                        ev.inc_path(__wl_resolve_path($path));
+                    if let Some(ev) = $crate::current() {
+                        ev.inc_path($crate::__wl_resolve_path($path));
                     }
                 };
             }
@@ -1125,8 +1162,8 @@ impl GenContext {
             #[macro_export]
             macro_rules! wl_dec {
                 ($path:literal) => {
-                    if let Some(ev) = current() {
-                        ev.dec_path(__wl_resolve_path($path));
+                    if let Some(ev) = $crate::current() {
+                        ev.dec_path($crate::__wl_resolve_path($path));
                     }
                 };
             }
@@ -1134,8 +1171,8 @@ impl GenContext {
             #[macro_export]
             macro_rules! wl_add {
                 ($path:literal, $n:expr) => {
-                    if let Some(ev) = current() {
-                        ev.add_n_path(__wl_resolve_path($path), $n);
+                    if let Some(ev) = $crate::current() {
+                        ev.add_n_path($crate::__wl_resolve_path($path), $n);
                     }
                 };
             }
@@ -1143,8 +1180,8 @@ impl GenContext {
             #[macro_export]
             macro_rules! wl_null {
                 ($path:literal) => {
-                    if let Some(ev) = current() {
-                        ev.add_path(__wl_resolve_path($path), ());
+                    if let Some(ev) = $crate::current() {
+                        ev.add_path($crate::__wl_resolve_path($path), ());
                     }
                 };
             }
@@ -1158,13 +1195,13 @@ impl GenContext {
             #[macro_export]
             macro_rules! info {
                 ($msg:literal) => {
-                    if let Some(ev) = current() {
+                    if let Some(ev) = $crate::current() {
                         ev.append_log_entry_static("info", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = current() {
-                        FMT_BUF.with(|buf| {
+                    if let Some(ev) = $crate::current() {
+                        $crate::FMT_BUF.with(|buf| {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
@@ -1177,13 +1214,13 @@ impl GenContext {
             #[macro_export]
             macro_rules! warn {
                 ($msg:literal) => {
-                    if let Some(ev) = current() {
+                    if let Some(ev) = $crate::current() {
                         ev.append_log_entry_static("warn", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = current() {
-                        FMT_BUF.with(|buf| {
+                    if let Some(ev) = $crate::current() {
+                        $crate::FMT_BUF.with(|buf| {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
@@ -1196,13 +1233,13 @@ impl GenContext {
             #[macro_export]
             macro_rules! error {
                 ($msg:literal) => {
-                    if let Some(ev) = current() {
+                    if let Some(ev) = $crate::current() {
                         ev.append_log_entry_static("error", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = current() {
-                        FMT_BUF.with(|buf| {
+                    if let Some(ev) = $crate::current() {
+                        $crate::FMT_BUF.with(|buf| {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
@@ -1215,13 +1252,13 @@ impl GenContext {
             #[macro_export]
             macro_rules! debug {
                 ($msg:literal) => {
-                    if let Some(ev) = current() {
+                    if let Some(ev) = $crate::current() {
                         ev.append_log_entry_static("debug", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = current() {
-                        FMT_BUF.with(|buf| {
+                    if let Some(ev) = $crate::current() {
+                        $crate::FMT_BUF.with(|buf| {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
@@ -1234,13 +1271,13 @@ impl GenContext {
             #[macro_export]
             macro_rules! trace {
                 ($msg:literal) => {
-                    if let Some(ev) = current() {
+                    if let Some(ev) = $crate::current() {
                         ev.append_log_entry_static("trace", $msg);
                     }
                 };
                 ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = current() {
-                        FMT_BUF.with(|buf| {
+                    if let Some(ev) = $crate::current() {
+                        $crate::FMT_BUF.with(|buf| {
                             let mut buf = buf.borrow_mut();
                             buf.clear();
                             let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
