@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-07-19
+
+### Fixed
+- `WideLogGuard` is `Send` again. The 0.6.0 "eliminate raw pointer"
+  refactor (commit `77026d8`) changed the macro-generated guard's
+  `prev` field from `*mut WideEvent<K>` to `*const WideEvent<K>`
+  and removed the explicit `unsafe impl<F: ...> Send for WideLogGuard<F>`,
+  intending for auto-trait derivation to take over. In practice, the
+  auto-trait derivation through `Box<ScopedGuard<F>>` with the HRTB
+  function-pointer bound does not propagate on the current
+  toolchain, so the generated guard ended up `!Send` and could
+  not be moved into `tokio::spawn` (the user's
+  `backup-quarterback` crate hit this on `tokio::spawn(reload_from_path(...))`
+  where `reload_from_path` constructs a `WideLogGuard`). 0.6.1
+  restores the explicit `unsafe impl Send` with the same safety
+  argument as the previous version.
+- `FMT_BUF` (and the other macro-emitted thread-locals
+  `CURRENT_EVENT`, `EMIT_BUF`, `ULID_BUF`) are now `pub(crate)`,
+  so the format-arg branches of `info!`/`warn!`/`error!`/
+  `debug!`/`trace!` — which reference `FMT_BUF.with(|buf| ...)`
+  by bare name — resolve correctly when called from any module in
+  the user crate, not just the module that invoked `wide_log!`.
+  In 0.6.0 the thread-locals were private `static`s, so any
+  sub-module that used a format-arg `info!("…fmt…", arg)` got
+  `E0425: cannot find value 'FMT_BUF' in this scope`. The fix
+  is minimum visibility (`pub(crate)`); `pub` would leak
+  implementation details to downstream crates.
+
+### Added
+- `tests/cross_module.rs`: a new integration test that
+  exercises the format-arg `info!`/`warn!`/`error!`/`debug!`/
+  `trace!` macros from a child `mod child;` and asserts the
+  formatted strings are appended to the emitted JSON's `log`
+  array. Had this test existed in 0.6.0, it would have caught
+  the FMT_BUF visibility bug at release time.
+- `tests/macros.rs::wide_log_guard_can_be_sent_across_threads`:
+  the test body is now a real cross-thread assertion
+  (`std::thread::spawn` and `tokio::spawn`) instead of the
+  0.6.0 placeholder. Had this been a real assertion in 0.6.0,
+  the Send regression would have been caught at release time.
+
 ## [0.6.0] - 2026-07-19
 
 The 0.6.0 release is a comprehensive hardening pass: a new

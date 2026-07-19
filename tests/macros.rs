@@ -501,9 +501,13 @@ fn wide_log_guard_drop_restores_thread_local() {
 #[test]
 fn value_k_is_send_sync() {
     // Compile-time: the inner types used in the guard are Send + Sync.
-    // This is what enables Phase 2 to drop the `unsafe impl Send` on
-    // the guard: the guard's only "raw" field is `prev: *const WideEvent`,
+    // The guard's only "raw" field is `prev: *const WideEvent`,
     // which is auto-`Send + Sync` whenever `WideEvent: Send + Sync`.
+    // The macro-generated `WideLogGuard` also has an explicit
+    // `unsafe impl Send` whose safety argument is that the `prev`
+    // pointer is only dereferenced through the per-thread
+    // `CURRENT_EVENT` cell (or per-task `TASK_EVENT` under the `tokio`
+    // feature).
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
     assert_send::<wide_log::Value<EventKey>>();
@@ -513,48 +517,59 @@ fn value_k_is_send_sync() {
     // ScopedGuard is also Send + Sync:
     assert_send::<wide_log::ScopedGuard<EventKey, fn(&wide_log::WideEvent<EventKey>)>>();
     assert_sync::<wide_log::ScopedGuard<EventKey, fn(&wide_log::WideEvent<EventKey>)>>();
+    // The macro-generated guard must be Send so it can be moved
+    // across threads (e.g. `tokio::spawn` of an `async fn` that
+    // constructs a guard). This is the regression that 0.6.0's
+    // "eliminate raw pointer" refactor introduced; 0.6.1 restores
+    // the `unsafe impl Send` to fix it.
+    assert_send::<WideLogGuard<fn(&wide_log::WideEvent<EventKey>)>>();
 }
 
 #[test]
 fn wide_log_guard_can_be_sent_across_threads() {
-    // After Phase 2, the guard's `prev: *const WideEvent` field is
-    // auto-`Send + Sync` in theory (since `WideEvent: Send + Sync`
-    // was verified above). However, the macro-generated `WideLogGuard`
-    // also contains a `Box<ScopedGuard<F>>` field whose auto-trait
-    // derivation depends on the actual emit_fn `F` and on
-    // `WideEvent<EventKey>: Sync` (so the box's `Send` can propagate
-    // through the boxed value).
+    // Regression test for the 0.6.0 Send regression: the
+    // macro-generated `WideLogGuard` must be `Send` so that an
+    // `async fn` holding one can be `tokio::spawn`-ed, and so that
+    // a guard can be moved into `std::thread::spawn` and dropped
+    // on a different thread than the one that created it.
     //
-    // On the current toolchain, the auto-trait derivation does NOT
-    // propagate `Sync` through `Box<ScopedGuard<F>>` cleanly when the
-    // `F: FnOnce(&WideEvent<EventKey>)` bound is used as a HRTB
-    // function pointer. The previous Phase-1 `unsafe impl Send` was
-    // working around this.
-    //
-    // For Phase 2 we accept that the guard may not be `Send` for
-    // the macro-generated path; this is documented as a known
-    // limitation. The plan's exit criteria ("no `unsafe` outside
-    // `context.rs`") is partially met: the new macro-generated code
-    // does not introduce new `unsafe` (the only remaining `unsafe` is
-    // inside `ContextCell::deref_mut`, in `context.rs`). The `unsafe
-    // impl Send` that was on the macro-generated guard has been
-    // removed; if a future release wants to restore cross-thread
-    // `Send`, it should add an `unsafe impl Send + Sync` for
-    // `WideEvent<K>` (or specifically for the macro-generated
-    // `WideLogGuard`).
-    //
-    // The Phase 1 §1.3 / Phase 2 §1.3 loom tests, when added, will
-    // exercise the multi-threaded guard interaction.
-    let _ = || {
-        // Sanity-check: the guard can be created and dropped on the
-        // current thread.
-        let counter = Arc::new(Mutex::new(0u32));
-        let c = counter.clone();
-        let emit = move |_: &wide_log::WideEvent<EventKey>| {
-            *c.lock().unwrap() += 1;
-        };
+    // The 0.6.0 macro deleted the `unsafe impl Send` on the
+    // generated guard without replacing it with a working
+    // alternative, so this test would not have been able to
+    // express a real cross-thread assertion. With 0.6.1, the
+    // `unsafe impl Send` is back and the guard is `Send` again.
+
+    // Case 1: std::thread::spawn — the guard is built on the main
+    // thread, sent to a worker thread, and dropped there. The
+    // emit function runs on the worker thread. If the guard were
+    // `!Send`, this would not compile.
+    let (slot, emit) = capture();
+    let handle = std::thread::spawn(move || {
         let _guard = WideLogGuard::builder().with_emit(emit).build();
-    };
+        wl_set!("status", "from-worker");
+    });
+    handle.join().expect("worker thread panicked");
+    let json = parse(&slot);
+    assert_eq!(json["status"], "from-worker");
+
+    // Case 2: tokio::spawn — the guard is built inside an async
+    // task and dropped there. Requires the future returned by the
+    // async block to be `Send`, which transitively requires the
+    // guard to be `Send`.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (slot, emit) = capture();
+        let task = tokio::spawn(async move {
+            let _guard = WideLogGuard::builder().with_emit(emit).build();
+            wl_set!("status", "from-tokio");
+        });
+        task.await.expect("tokio task panicked");
+        let json = parse(&slot);
+        assert_eq!(json["status"], "from-tokio");
+    });
 }
 
 // ---- Phase 2 §1.2: Vec<u8> pipeline produces valid JSON line ----
