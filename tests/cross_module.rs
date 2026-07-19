@@ -38,7 +38,10 @@ wide_log!({
 
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
-fn capture() -> (CaptureSlot, impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static) {
+fn capture() -> (
+    CaptureSlot,
+    impl FnOnce(&wide_log::WideEvent<EventKey>) + Send + 'static,
+) {
     let slot: CaptureSlot = Arc::new(Mutex::new(None));
     let s = slot.clone();
     let emit = move |ev: &wide_log::WideEvent<EventKey>| {
