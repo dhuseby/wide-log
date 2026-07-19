@@ -430,7 +430,11 @@ When porting an existing `tracing`-based service to `wide-log`:
 8. **Run `wide_log::stdout_emit::flush()` at the end of
    `main`** to ensure all buffered events are written before
    the process exits. Without this, the default `FlushPolicy`'s
-   100 ms batching can drop the last batch on shutdown.
+   100 ms batching can drop the last batch on shutdown if the
+   process is killed before the timer fires. (Since 0.6.3 the
+   writer thread self-wakes on its own timer, so an idle channel
+   is no longer a hang risk; `flush()` is still recommended as a
+   clean-shutdown guarantee.)
 
 ---
 
@@ -461,7 +465,7 @@ When porting an existing `tracing`-based service to `wide-log`:
 ## 11. See also
 
 - [README.md](./README.md) — quick start, builder pattern, macro reference
-- [CHANGELOG.md](./CHANGELOG.md) — full 0.6.0 release notes
+- [CHANGELOG.md](./CHANGELOG.md) — full release notes (latest: 0.6.3)
 - [baselines/phase9_final.md](./baselines/phase9_final.md) — performance benchmarks
 - [`examples/basic.rs`](./examples/basic.rs) — minimal `wide_log!` usage
 - [`examples/axum_ok.rs`](./examples/axum_ok.rs) — `WideLogLayer` with axum

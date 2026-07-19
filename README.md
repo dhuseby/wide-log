@@ -545,6 +545,15 @@ flush fires, that line is lost. The maximum loss is bounded by
 `max_interval` (100 ms by default) of buffered output, plus any
 bytes the kernel hasn't yet flushed to the pipe.
 
+The writer thread wakes itself on its own timer — it does not
+rely on the arrival of new events to check the flush clock. So a
+consumer reading this process's stdout pipe (a test harness, a
+log shipper, or a sidecar) observes the buffered line within
+`max_interval` of the last `submit`, without the producer having
+to call `flush()`. (Before 0.6.3 the writer only checked the
+timer when a new job arrived, so an idle channel could keep
+output buffered indefinitely — a reader of the pipe would hang.)
+
 For maximum durability, call `set_flush_policy` with
 `FlushPolicy::per_line()` (the pre-Phase-4 behavior):
 

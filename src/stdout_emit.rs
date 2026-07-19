@@ -225,9 +225,30 @@ fn writer_loop(rx: mpsc::Receiver<Job>) {
     let mut batch_bytes: usize = 0;
     let mut batch_lines: usize = 0;
 
-    for job in rx {
-        match job {
-            Job::Line(bytes) => {
+    // Wakeup interval for the time-based flush. The writer must not
+    // rely on the arrival of new `Job`s to check the flush timer: a
+    // consumer reading this process's stdout pipe (e.g. a test
+    // harness, a log shipper, or a sidecar) will hang forever if no
+    // further events arrive after the batch is opened. We use
+    // `recv_timeout` so the writer periodically wakes up on its own
+    // and flushes any buffered bytes even when the channel is idle.
+    //
+    // When `max_interval > 0`, we sleep at most that long between
+    // wakeups. When `max_interval == 0` (per_line / disabled), we
+    // still need a bounded wakeup so that a closed channel is
+    // observed promptly and any trailing buffered bytes are flushed;
+    // 100 ms matches the default policy's granularity and is short
+    // enough that process teardown does not stall on the final
+    // drain.
+    let wakeup = if policy.max_interval > Duration::ZERO {
+        policy.max_interval
+    } else {
+        Duration::from_millis(100)
+    };
+
+    loop {
+        match rx.recv_timeout(wakeup) {
+            Ok(Job::Line(bytes)) => {
                 // `write_all` to a `BufWriter` only fails in exceptional cases
                 // (e.g. broken pipe). On error we drop the line and continue.
                 if buf.write_all(&bytes).is_err() {
@@ -255,6 +276,7 @@ fn writer_loop(rx: mpsc::Receiver<Job>) {
                     batch_lines = 0;
                     continue;
                 }
+
                 // Time-based flush: if the batch has been open for
                 // longer than `max_interval` and we have at least
                 // one line, flush.
@@ -268,26 +290,32 @@ fn writer_loop(rx: mpsc::Receiver<Job>) {
                     }
                 }
             }
-            Job::Flush(ack) => {
+            Ok(Job::Flush(ack)) => {
                 let _ = buf.flush();
                 batch_started = Instant::now();
                 batch_bytes = 0;
                 batch_lines = 0;
                 let _ = ack.send(());
             }
-        }
-
-        // After handling any job, check the time threshold (covers
-        // the case where the loop is spinning on `recv()` and not
-        // processing any Line jobs).
-        if policy.max_interval > Duration::ZERO {
-            let elapsed = batch_started.elapsed();
-            if elapsed >= policy.max_interval && batch_lines > 0 {
-                let _ = buf.flush();
-                batch_started = Instant::now();
-                batch_bytes = 0;
-                batch_lines = 0;
+            // Channel is empty but still open: this is the timer
+            // wakeup. If the current batch has aged past
+            // `max_interval`, flush it. With `max_interval == 0`
+            // (per_line), batches are always flushed inline on each
+            // Line, so this branch is a no-op for that policy.
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if policy.max_interval > Duration::ZERO
+                    && batch_lines > 0
+                    && batch_started.elapsed() >= policy.max_interval
+                {
+                    let _ = buf.flush();
+                    batch_started = Instant::now();
+                    batch_bytes = 0;
+                    batch_lines = 0;
+                }
             }
+            // All senders dropped (channel closed): drain any
+            // remaining buffered bytes and exit the writer thread.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
