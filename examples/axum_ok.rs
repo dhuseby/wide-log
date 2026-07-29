@@ -60,7 +60,9 @@ async fn main() {
     let done = Notify::new();
     DONE.set(done).unwrap();
 
-    let app = Router::new().route("/ok", get(ok)).layer(WideLogLayer);
+    let app = Router::new()
+        .route("/ok", get(ok))
+        .layer(WideLogLayer::new());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await

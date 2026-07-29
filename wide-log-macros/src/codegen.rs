@@ -811,6 +811,18 @@ impl GenContext {
                 tz: ::wide_log::__re_exports_core::chrono_tz::Tz,
                 id_fn: ::std::boxed::Box<dyn FnOnce() -> String + Send>,
                 emit_fn: F,
+                /// Optional closure called on `build()` / `scope()` after the
+                /// `wide_log!` macro's literal defaults are applied and before
+                /// the event ID is set. Use `with_preset()` to hoist
+                /// per-connection constants (service name, version, etc.) out
+                /// of the per-request `wl_set!` path. The closure must be
+                /// `Send + Sync + 'static` so it can be shared across tasks via
+                /// `Arc`.
+                preset: ::std::option::Option<
+                    ::std::sync::Arc<
+                        dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                    >,
+                >,
             }
         };
 
@@ -821,6 +833,7 @@ impl GenContext {
                         tz: ::wide_log::__re_exports_core::chrono_tz::Tz::UTC,
                         id_fn: #default_id_fn,
                         emit_fn: default_emit,
+                        preset: ::std::option::Option::None,
                     }
                 }
             }
@@ -830,6 +843,41 @@ impl GenContext {
             {
                 pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::chrono_tz::Tz) -> Self {
                     self.tz = tz;
+                    self
+                }
+
+                // Phase 1.3 / issue #24: pre-set constant fields on the
+                // builder so they are applied to every event created from
+                // this builder (or from `scope_with_defaults()` / a
+                // `WideLogLayer` configured with this preset) without a
+                // per-request `wl_set!` call. The closure is stored in an
+                // `Arc` so it can be cheaply cloned and shared across
+                // tasks/connections.
+                //
+                // Accepts any `Fn + Send + Sync + 'static` closure (which
+                // is wrapped in an `Arc`) OR an existing `Arc<dyn Fn ...>`
+                // (via the `From` impl below).
+                pub fn with_preset<
+                    P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
+                >(
+                    mut self,
+                    preset: P,
+                ) -> Self {
+                    self.preset = ::std::option::Option::Some(::std::sync::Arc::new(preset));
+                    self
+                }
+
+                /// Set a pre-built `Arc<dyn Fn ...>` preset directly. Useful
+                /// when the preset is shared across multiple builders/scopes
+                /// (e.g. HTTP and TCP transports in the same process share
+                /// the same `ServiceIdentity`-based preset).
+                pub fn with_preset_arc(
+                    mut self,
+                    preset: ::std::sync::Arc<
+                        dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                    >,
+                ) -> Self {
+                    self.preset = ::std::option::Option::Some(preset);
                     self
                 }
 
@@ -859,6 +907,7 @@ impl GenContext {
                         tz: self.tz,
                         id_fn: self.id_fn,
                         emit_fn,
+                        preset: self.preset,
                     }
                 }
 
@@ -871,6 +920,9 @@ impl GenContext {
                         use ::std::ops::DerefMut;
                         let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
                         #(#default_stmts)*
+                        if let ::std::option::Option::Some(ref p) = self.preset {
+                            p(event);
+                        }
                         event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
                     }
                     // We need a `*mut` to store in the cell so the
@@ -1047,7 +1099,7 @@ impl GenContext {
                     let id_str = ULID_BUF.with(|buf| {
                         let mut buf = buf.borrow_mut();
                         buf.clear();
-                        use ::std::fmt::Write as _;
+                        use ::std::fmt::Write;
                         let _ = write!(
                             &mut *buf,
                             "{}",
@@ -1073,25 +1125,152 @@ impl GenContext {
                 pub async fn scope_default<F: ::std::future::Future>(f: F) -> F::Output {
                     scope(default_emit, f).await
                 }
+
+                /// Like `scope()` but applies a preset closure to the event
+                /// after the `wide_log!` macro's literal defaults and before
+                /// the event ID is set. The preset closure is `Send + Sync +
+                /// 'static` so it can be captured from a `WideLogGuardBuilder`
+                /// or constructed inline. Use this to hoist per-connection
+                /// constants (service name, version, etc.) out of the
+                /// per-request `wl_set!` path. See issue #24.
+                pub async fn scope_with_defaults<F, E, P>(emit_fn: E, preset: P, f: F) -> F::Output
+                where
+                    F: ::std::future::Future,
+                    E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
+                    P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
+                {
+                    let id_str = ULID_BUF.with(|buf| {
+                        let mut buf = buf.borrow_mut();
+                        buf.clear();
+                        use ::std::fmt::Write;
+                        let _ = write!(
+                            &mut *buf,
+                            "{}",
+                            ::wide_log::__re_exports_core::ulid::Ulid::generate()
+                        );
+                        buf.clone()
+                    });
+                    let mut inner = ::std::boxed::Box::new(
+                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
+                    );
+                    {
+                        use ::std::ops::DerefMut;
+                        let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
+                        #(#default_stmts)*
+                        preset(event);
+                        event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
+                    }
+                    let cell = ::wide_log::ContextCell::new();
+                    cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
+                    let _inner = inner;
+                    TASK_EVENT.scope(cell, f).await
+                }
+
+                /// Like `scope_default()` but applies a preset closure
+                /// wrapped in an `Arc`. This is the variant used by the
+                /// `WideLogLayer` middleware and by callers that share a
+                /// preset across multiple scopes.
+                pub async fn scope_default_with_defaults_arc<F>(
+                    preset: ::std::sync::Arc<
+                        dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                    >,
+                    f: F,
+                ) -> F::Output
+                where
+                    F: ::std::future::Future,
+                {
+                    scope_with_defaults(default_emit, move |ev| preset(ev), f).await
+                }
+
+                /// Like `scope_default()` but applies a preset closure.
+                pub async fn scope_default_with_defaults<F, P>(preset: P, f: F) -> F::Output
+                where
+                    F: ::std::future::Future,
+                    P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
+                {
+                    scope_with_defaults(default_emit, preset, f).await
+                }
             };
 
             let middleware = quote! {
                 use std::task::{Context, Poll};
                 use std::pin::Pin;
 
+                /// Tower middleware that wraps every request in a
+                /// `scope_default()` (or `scope_default_with_defaults()` if a
+                /// preset closure is configured) call, creating a task-local
+                /// wide-log guard for the entire request span.
                 #[derive(Clone)]
-                pub struct WideLogLayer;
+                pub struct WideLogLayer {
+                    preset: ::std::option::Option<
+                        ::std::sync::Arc<
+                            dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                        >,
+                    >,
+                }
+
+                /// Default `WideLogLayer` with no preset — equivalent to
+                /// `scope_default()`.
+                impl ::std::default::Default for WideLogLayer {
+                    fn default() -> Self {
+                        Self { preset: ::std::option::Option::None }
+                    }
+                }
+
+                impl WideLogLayer {
+                    /// Create a `WideLogLayer` with no preset. Equivalent to
+                    /// `WideLogLayer::default()`.
+                    pub fn new() -> Self {
+                        Self::default()
+                    }
+
+                    /// Configure a preset closure that is applied to every
+                    /// per-request event after the `wide_log!` macro's literal
+                    /// defaults and before the event ID is set. Use this to
+                    /// hoist per-connection constants (service name, version,
+                    /// environment, instance_id, system) out of the per-request
+                    /// `wl_set!` path. See issue #24.
+                    pub fn with_preset<
+                        P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
+                    >(
+                        self,
+                        preset: P,
+                    ) -> Self {
+                        Self {
+                            preset: ::std::option::Option::Some(::std::sync::Arc::new(preset)),
+                        }
+                    }
+
+                    /// Like `with_preset` but accepts a pre-built
+                    /// `Arc<dyn Fn ...>` preset. Useful when the preset is
+                    /// shared across multiple layers/scopes.
+                    pub fn with_preset_arc(
+                        self,
+                        preset: ::std::sync::Arc<
+                            dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                        >,
+                    ) -> Self {
+                        Self {
+                            preset: ::std::option::Option::Some(preset),
+                        }
+                    }
+                }
 
                 impl<S> ::wide_log::__re_exports::tower::Layer<S> for WideLogLayer {
                     type Service = WideLogMiddleware<S>;
                     fn layer(&self, inner: S) -> Self::Service {
-                        WideLogMiddleware { inner }
+                        WideLogMiddleware { inner, preset: self.preset.clone() }
                     }
                 }
 
                 #[derive(Clone)]
                 pub struct WideLogMiddleware<S> {
                     inner: S,
+                    preset: ::std::option::Option<
+                        ::std::sync::Arc<
+                            dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
+                        >,
+                    >,
                 }
 
                 impl<S, ReqBody, ResBody, Err> ::wide_log::__re_exports::tower::Service<ReqBody> for WideLogMiddleware<S>
@@ -1111,7 +1290,8 @@ impl GenContext {
 
                     fn call(&mut self, req: ReqBody) -> Self::Future {
                         let inner_fut = self.inner.call(req);
-                        WideLogFuture::new(inner_fut)
+                        let preset = self.preset.clone();
+                        WideLogFuture::new(inner_fut, preset)
                     }
                 }
 
@@ -1124,13 +1304,17 @@ impl GenContext {
                     ResBody: Send + 'static,
                     Err: Send + 'static,
                 {
-                    fn new<F>(inner: F) -> Self
+                    fn new<F>(inner: F, preset: ::std::option::Option<::std::sync::Arc<dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync>>) -> Self
                     where
                         F: ::std::future::Future<Output = Result<ResBody, Err>> + Send + 'static,
                     {
-                        Self {
-                            inner: ::std::boxed::Box::pin(scope_default(async move { inner.await })),
-                        }
+                        let inner_fut: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = Result<ResBody, Err>> + Send>> =
+                            if let ::std::option::Option::Some(p) = preset {
+                                ::std::boxed::Box::pin(scope_default_with_defaults_arc(p, async move { inner.await }))
+                            } else {
+                                ::std::boxed::Box::pin(scope_default(async move { inner.await }))
+                            };
+                        Self { inner: inner_fut }
                     }
                 }
 
