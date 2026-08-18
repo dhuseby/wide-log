@@ -197,10 +197,10 @@ fn duration_auto_added() {
 
     let parsed = parse(&captured);
     use sonic_rs::JsonValueTrait;
-    let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
+    let total_ms = parsed["duration"]["total_ms"].as_f64().unwrap();
     assert!(
-        total_ms >= 1,
-        "duration.total_ms should be >= 1, got {total_ms}"
+        total_ms >= 1.0,
+        "duration.total_ms should be >= 1.0, got {total_ms}"
     );
 }
 

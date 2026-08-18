@@ -590,7 +590,8 @@ fn default_emit_produces_valid_json_line() {
     let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
     assert_eq!(parsed["status"], "ok");
     // Duration and event metadata are populated by the guard's drop.
-    assert!(parsed["duration"]["total_ms"].is_i64());
+    // total_ms is now an f64 (unit-suffix duration fix).
+    assert!(parsed["duration"]["total_ms"].is_f64());
     assert!(parsed["event"]["timestamp"].is_str());
     assert!(parsed["event"]["id"].is_str());
 }
