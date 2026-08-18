@@ -136,11 +136,11 @@ fn duration_to_unit_f64(leaf_name: &str, elapsed: std::time::Duration) -> f64 {
     match suffix {
         Some("ns") => elapsed.as_nanos() as f64,
         Some("us") => elapsed.as_micros() as f64,
-        Some("ms") => elapsed.as_millis() as f64,
+        Some("ms") => elapsed.as_nanos() as f64 / 1_000_000.0,
         Some("s") => elapsed.as_secs_f64(),
         Some("m") => elapsed.as_secs_f64() / 60.0,
         Some("h") => elapsed.as_secs_f64() / 3600.0,
-        _ => elapsed.as_millis() as f64,
+        _ => elapsed.as_nanos() as f64 / 1_000_000.0,
     }
 }
 
