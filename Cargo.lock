@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "wide-log"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "axum",
  "chrono",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "wide-log-macros"
-version = "0.6.4"
+version = "0.6.5"
 dependencies = [
  "proc-macro2",
  "quote",

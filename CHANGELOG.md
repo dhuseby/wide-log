@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-08-18
+
+### Fixed
+- The `duration!` marker now calculates the duration in the time units
+  defined by the suffix of the wide log key name. The guard previously
+  always computed the elapsed milliseconds (`as_millis()`) and stored a
+  `u64`. It did this without regard for the leaf key suffix. Thus
+  `"total_s": duration!` stored milliseconds. This was the wrong unit.
+  The `"total_ns": duration!` stored milliseconds. This was the wrong
+  unit and the wrong magnitude. The guard now reads the leaf key name
+  suffix (`_ns`, `_us`, `_ms`, `_s`, `_m`, `_h`) via the `Key::as_str()`
+  of the last segment of `DURATION_PATH`. It converts the elapsed
+  `std::time::Duration` to the related f64 unit. An unrecognized suffix
+  (no `_<unit>` trailing segment) defaults to milliseconds. This keeps
+  backward compatibility for custom leaf names like `"wall"`. All
+  duration values now serialize as f64. They are JSON numbers with a
+  fractional part. The strategy doc and the README now show f64 for all
+  duration units. The `_ms` and `_us` branches derive from
+  `as_nanos() / 1_000.0` (or `/ 1_000_000.0`) so sub-millisecond and
+  sub-microsecond elapsed times keep their fractional precision instead
+  of truncating to zero.
+- Bump the `wide-log-macros` dependency from `0.6.3` to `0.6.5`. The
+  `0.6.4` Cargo.toml bump missed this dependency version.
+
+### Added
+- `tests/common/mod.rs` with shared helpers (`make_capture`, `parse`,
+  `as_f64`, `sleep_20ms`) generic over `K: Key` so each per-unit test
+  file's distinct `EventKey` works.
+- Seven per-unit integration test files, each invoking `wide_log!`
+  with one duration leaf: `tests/duration_seconds.rs` (`total_s`),
+  `tests/duration_millis.rs` (`total_ms`), `tests/duration_micros.rs`
+  (`total_us`), `tests/duration_nanos.rs` (`total_ns`),
+  `tests/duration_minutes.rs` (`total_m`), `tests/duration_hours.rs`
+  (`total_h`), and `tests/duration_no_suffix.rs` (`wall`, default ms).
+  Each test sleeps for 20 ms, drops the guard, parses the captured
+  JSON, and asserts the emitted value is an f64 in the correct unit
+  range. The key anti-bug assertion is that a 20 ms sleep must not
+  yield ~20.0 in the `_s` / `_us` / `_ns` / `_m` / `_h` fields.
+
+### Changed
+- Update `src/guard.rs::guard_duration_is_milliseconds`. It now
+  asserts f64 instead of u64. Renamed to
+  `guard_duration_is_milliseconds_f64`.
+- Update `tests/macros.rs`, `tests/integration.rs`. The assertions that
+  read `duration.total_ms` as u64 or i64 now read it as f64.
+- Update doc comments in `src/guard.rs`, `src/key.rs`, `src/lib.rs`,
+  `README.md`, and `wide-log-strategy.md` to describe f64 and
+  suffix-driven units.
+
+## [0.6.4] - 2026-08-18
+
+### Added
+- `WideLogGuardBuilder::with_preset(closure)` and `with_preset_arc(Arc)`
+  (issue #24, PR #10). The preset closure is applied on `build()` /
+  `scope_with_defaults()` after the `wide_log!` macro's literal
+  defaults and before the event ID is set. Use this to hoist
+  per-connection constants (service name, version, environment,
+  instance_id, system) out of the per-request `wl_set!` path. The
+  closure is stored in an `Arc` so it can be cheaply cloned and shared
+  across tasks/connections.
+- `scope_with_defaults(emit_fn, preset, f)`,
+  `scope_default_with_defaults(preset, f)`, and
+  `scope_default_with_defaults_arc(preset, f)` async functions. These
+  are like `scope()` / `scope_default()` but apply a preset closure to
+  the event after the macro's literal defaults and before the event ID
+  is set.
+- `WideLogLayer::with_preset(closure)` and `with_preset_arc(Arc)` on the
+  Tower middleware. The layer now carries an `Option<Arc<dyn Fn ...>>`
+  preset that is applied to every per-request event. `WideLogLayer`
+  now implements `Default` and has a `new()` constructor.
+- Integration tests in `tests/async.rs` for the preset API:
+  `middleware_with_preset_applies_to_request`,
+  `scope_with_defaults_applies_preset_before_handler`,
+  `scope_with_defaults_presets_without_handler_override`,
+  `scope_default_with_defaults_works`,
+  `builder_with_preset_applies_on_build`,
+  `builder_with_preset_propagates_through_with_emit`.
+
+### Changed
+- The `wide_log!`-generated `WideLogGuardBuilder` now carries a
+  `preset: Option<Arc<dyn Fn(&mut WideEvent) + Send + Sync + 'static>>`
+  field. It is `None` by default and does not change the behavior of
+  existing builders. The preset is applied in `build()` and in
+  `scope_with_defaults()` after the literal defaults and before the
+  event ID is set.
+- The `WideLogLayer` Tower middleware now carries a `preset` field. It
+  is `None` by default (equivalent to the previous behavior) and is
+  cloned into the per-request `WideLogMiddleware` service.
+- Minor codegen cleanup: `use ::std::fmt::Write as _` in the ULID
+  generator became `use ::std::fmt::Write` (the `as _` import was
+  unnecessary).
+
+### Notes
+- This CHANGELOG entry backfills the 0.6.4 release. The Cargo.toml
+  bumped the version in the optimizations merge (`1e30bac`, PR #10),
+  but the CHANGELOG did not record it.
+
 ## [0.6.3] - 2026-07-19
 
 ### Fixed
@@ -1003,6 +1100,8 @@ For maximum durability, use `FlushPolicy::per_line()`.
 - Examples: `basic`, `custom_emit`, `explicit_duration`.
 - Integration and macro test suites.
 
+[0.6.5]: https://github.com/dhuseby/wide-log/releases/tag/0.6.5
+[0.6.4]: https://github.com/dhuseby/wide-log/releases/tag/0.6.4
 [0.5.0]: https://github.com/dhuseby/wide-log/releases/tag/0.5.0
 [0.4.0]: https://github.com/dhuseby/wide-log/releases/tag/0.4.0
 [0.3.0]: https://github.com/dhuseby/wide-log/releases/tag/0.3.0
