@@ -163,8 +163,9 @@ Example output:
 
 Timing is critical in our event processing. The `duration` object is
 auto-added as `"duration": { "total_ms": duration! }` if the user does not
-declare it. The guard sets `duration.total_ms` to the elapsed milliseconds
-(measured from guard creation to drop) on drop.
+declare it. The guard sets `duration.total_ms` to the elapsed time in the unit
+indicated by the leaf suffix (default ms), as an f64 (measured from guard
+creation to drop) on drop.
 
 The crate requires exactly one `duration!` marker leaf in the `"duration"`
 subtree. If absent, the macro defaults to `total_ms`. Any other duration may be
@@ -174,12 +175,12 @@ milliseconds, seconds, minutes, and hours respectively.
 
 | **Field**  | **Type** | **Description**                       |
 | ---------- | -------- | ------------------------------------- |
-| `total_ms` | u64      | Total duration in milliseconds (default leaf) |
-| `<any>_ns` | u64      | Any duration measured in nanoseconds  |
-| `<any>_ms` | u64      | Any duration measured in milliseconds |
-| `<any>_s`  | u64      | Any duration measured in seconds      |
-| `<any>_m`  | u64      | Any duration measured in minutes      |
-| `<any>_h`  | u64      | Any duration measured in hours        |
+| `total_ms` | f64      | Total duration in milliseconds (default leaf) |
+| `<any>_ns` | f64      | Any duration measured in nanoseconds  |
+| `<any>_ms` | f64      | Any duration measured in milliseconds |
+| `<any>_s`  | f64      | Any duration measured in seconds      |
+| `<any>_m`  | f64      | Any duration measured in minutes      |
+| `<any>_h`  | f64      | Any duration measured in hours        |
 
 The user may declare a custom duration leaf name (e.g., `"wall_ms": duration!`)
 in which case the guard sets that leaf instead of `total_ms`.
@@ -209,7 +210,7 @@ The `wide_log!` JSON supports the following value markers:
 
 | Marker | Meaning | Guard Behavior |
 | --- | --- | --- |
-| `duration!` | This key is the duration leaf. Value is elapsed ms, computed on drop. | Set on drop via `DURATION_PATH`. |
+| `duration!` | This key is the duration leaf. Value is elapsed time in the unit indicated by the leaf suffix (default ms), as an f64, computed on drop. | Set on drop via `DURATION_PATH`. |
 | `counter!` | This key is an incrementable counter. Initialized to 0 (absent). | No auto-set; `wl_inc!` initializes to 1. |
 | `null` | This key exists but has no default value. | No auto-set. |
 | `"literal"` | A string default value. | Set on creation as a `FastStr`. |

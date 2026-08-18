@@ -42,7 +42,10 @@ pub trait Key: Copy + Eq + 'static {
     fn as_index(self) -> usize;
 
     /// Path to the duration field (e.g. `[Duration, TotalMs]`).
-    /// Auto-set by the guard on drop. The value is in milliseconds (u64).
+    /// Auto-set by the guard on drop. The value is an `f64` in the unit
+    /// indicated by the suffix of the last path segment's key name
+    /// (e.g. `_s`, `_ms`, `_ns`); an unrecognized suffix defaults to
+    /// milliseconds.
     const DURATION_PATH: &'static [Self];
 
     /// Path to the timestamp field (e.g. `[Event, Timestamp]`).

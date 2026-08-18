@@ -10,10 +10,12 @@ use crate::wide_event::WideEvent;
 /// RAII guard that owns a [`WideEvent`] and emits it on drop.
 ///
 /// The guard starts a timer on creation. On drop, it sets the duration field
-/// (via [`Key::DURATION_PATH`]) to the elapsed milliseconds, sets the
-/// timestamp field (via [`Key::TIMESTAMP_PATH`]) to the current time as an
-/// RFC 3339 string in the guard's timezone, and calls the emit function
-/// with a reference to the event.
+/// (via [`Key::DURATION_PATH`]) to the elapsed time as an `f64` in the unit
+/// indicated by the suffix of the duration leaf key name (defaulting to
+/// milliseconds when the suffix is not recognized), sets the timestamp
+/// field (via [`Key::TIMESTAMP_PATH`]) to the current time as an RFC 3339
+/// string in the guard's timezone, and calls the emit function with a
+/// reference to the event.
 ///
 /// Implements [`Deref`] / [`DerefMut`] to [`WideEvent`] so you can call
 /// `add`, `add_path`, `inc`, etc. directly on the guard.
@@ -67,7 +69,8 @@ where
     /// Creates a new guard with the given emit function and UTC timezone.
     ///
     /// The timer starts immediately. On drop, the guard sets
-    /// `K::DURATION_PATH` to the elapsed milliseconds, sets
+    /// `K::DURATION_PATH` to the elapsed time as an `f64` in the unit
+    /// indicated by the duration leaf name suffix (default ms), sets
     /// `K::TIMESTAMP_PATH` to the current UTC time as RFC 3339, and
     /// calls `emit_fn`.
     pub(crate) fn new(emit_fn: F) -> Self {
@@ -117,22 +120,42 @@ where
     }
 }
 
+/// Convert an elapsed `Duration` to an `f64` in the unit indicated by the
+/// suffix of the duration leaf key name.
+///
+/// The suffix is the trailing segment after the final underscore in the
+/// leaf name (e.g. `"total_s"` -> `"s"`, `"wall_ms"` -> `"ms"`). Recognized
+/// units are `ns`, `us`, `ms`, `s`, `m`, and `h`. An unrecognized suffix (or
+/// no underscore) defaults to milliseconds, preserving backward
+/// compatibility for custom leaf names like `"wall"`.
+///
+/// Using `rsplit('_').next()` (rather than `ends_with("_s")`) avoids the
+/// pitfall where `"_s"` would also match `"total_ms"`.
+fn duration_to_unit_f64(leaf_name: &str, elapsed: std::time::Duration) -> f64 {
+    let suffix = leaf_name.rsplit('_').next();
+    match suffix {
+        Some("ns") => elapsed.as_nanos() as f64,
+        Some("us") => elapsed.as_nanos() as f64 / 1_000.0,
+        Some("ms") => elapsed.as_nanos() as f64 / 1_000_000.0,
+        Some("s") => elapsed.as_secs_f64(),
+        Some("m") => elapsed.as_secs_f64() / 60.0,
+        Some("h") => elapsed.as_secs_f64() / 3600.0,
+        _ => elapsed.as_nanos() as f64 / 1_000_000.0,
+    }
+}
+
 impl<K: Key, F> Drop for ScopedGuard<K, F>
 where
     F: FnOnce(&WideEvent<K>) + Send + 'static,
 {
     fn drop(&mut self) {
-        // Phase 3 §2.5: `as_millis() as u64` silently truncates on
-        // platforms where `u128` is wider than `u64` (effectively never
-        // on 64-bit, but the conversion is lossy in principle). Use
-        // `try_into` to saturate at `u64::MAX` instead of panicking
-        // in debug builds or wrapping in release.
-        let duration_ms: u64 = self
-            .start
-            .elapsed()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        // The duration is computed in the unit indicated by the suffix of
+        // the duration leaf key name (e.g. `_s`, `_ms`, `_ns`), as an f64.
+        // An unrecognized suffix defaults to milliseconds. See
+        // `duration_to_unit_f64` for the suffix-to-unit mapping.
+        let elapsed = self.start.elapsed();
+        let leaf = K::DURATION_PATH[K::DURATION_PATH.len() - 1].as_str();
+        let duration_val: f64 = duration_to_unit_f64(leaf, elapsed);
         // Fast path for common 2-segment DURATION_PATH and TIMESTAMP_PATH.
         // Uses direct indexed writes instead of object() to avoid the overhead
         // of creating and returning &mut references through the ManuallyDrop chain.
@@ -169,14 +192,14 @@ where
 
             // Now write the leaf values
             if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(dur_idx) {
-                obj.add(K::DURATION_PATH[1], duration_ms);
+                obj.add(K::DURATION_PATH[1], duration_val);
             }
             let now = chrono::Utc::now().with_timezone(&self.tz);
             if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(ts_idx) {
                 obj.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
             }
         } else {
-            self.event.add_path(K::DURATION_PATH, duration_ms);
+            self.event.add_path(K::DURATION_PATH, duration_val);
             let now = chrono::Utc::now().with_timezone(&self.tz);
             self.event.add_path(K::TIMESTAMP_PATH, now.to_rfc3339());
         }
@@ -331,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn guard_duration_is_milliseconds() {
+    fn guard_duration_is_milliseconds_f64() {
         let (slot, emit) = capture_json();
         let g = ScopedGuard::<TestKey, _>::new(emit);
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -339,10 +362,10 @@ mod tests {
         let json = slot.lock().unwrap().clone().unwrap();
         let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
         use sonic_rs::JsonValueTrait;
-        let total_ms = parsed["duration"]["total_ms"].as_u64().unwrap();
+        let total_ms = parsed["duration"]["total_ms"].as_f64().unwrap();
         assert!(
-            total_ms >= 1,
-            "duration.total_ms should be >= 1, got {total_ms}"
+            total_ms >= 1.0,
+            "duration.total_ms should be >= 1.0, got {total_ms}"
         );
     }
 

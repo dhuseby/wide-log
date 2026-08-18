@@ -23,3 +23,5 @@ target
 # AI cruft
 .opencode
 .claude
+plan.md
+session.json
