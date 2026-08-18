@@ -130,7 +130,7 @@ The macro automatically adds three keys that every wide event needs:
 2. **`"duration"`** (or your custom `Duration` override) — the duration of the
    wide event lifecycle. If the user does not declare it in the JSON, the macro
    automatically adds `"duration": { "total_ms": duration! }`. The guard sets
-   `duration.total_ms` to the elapsed milliseconds on drop.
+   `duration.total_ms` to the elapsed time in milliseconds (f64) on drop.
 
 3. **`"event"`** (or your custom `Event` override) — event metadata. If the
    user does not declare it in the JSON, the macro automatically adds
@@ -430,7 +430,7 @@ fn main() {
 
 | Marker | Meaning | Guard Behavior |
 |---|---|---|
-| `duration!` | This key is the duration. Value is elapsed ms, computed on drop. | Set on drop via `DURATION_PATH`. |
+| `duration!` | This key is the duration. Value is elapsed time in the unit indicated by the leaf suffix (default ms), as an f64, computed on drop. | Set on drop via `DURATION_PATH`. |
 | `counter!` | This key is an incrementable counter. Initialized to 0 (absent). | No auto-set; `wl_inc!` initializes to 1. |
 | `null` | This key exists but has no default value. | No auto-set. |
 | `"literal"` | A string default value. | Set on creation as a `FastStr`. |

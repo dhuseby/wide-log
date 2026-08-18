@@ -39,7 +39,8 @@
 //!
 //! - **`"log"`** — log entries from `info!()`, `warn!()`, etc. Handled
 //!   internally; never declared by the user.
-//! - **`"duration"`** — elapsed time in ms. Auto-added as
+//! - **`"duration"`** — elapsed time as an f64 in the unit indicated by the
+//!   leaf suffix (default ms). Auto-added as
 //!   `"duration": { "total_ms": duration! }` if not declared.
 //! - **`"event"`** — event metadata. Auto-added as
 //!   `"event": { "timestamp": null, "id": null }` if not declared.
@@ -113,7 +114,7 @@
 //! macros, use the fully qualified path: `::tracing::info!(...)`. (The default
 //! `default_emit` no longer routes through `tracing`; it writes the
 //! serialized JSON line directly to non-blocking stdout via
-//! [`stdout_emit::submit`](crate::stdout_emit::submit).)
+//! [`stdout_emit::submit`].)
 //!
 //! ## Features
 //!
@@ -187,7 +188,7 @@ pub mod stdout_emit;
 ///
 /// | Marker | Meaning |
 /// |---|---|
-/// | `duration!` | Duration leaf; set to elapsed ms on drop |
+/// | `duration!` | Duration leaf; set to elapsed time as an f64 in the unit indicated by the leaf suffix (default ms) on drop |
 /// | `counter!` | Incrementable counter; init to 0 (absent) |
 /// | `null` | No default value; set via `wl_set!` |
 /// | `"literal"` | String default; set on guard creation |
