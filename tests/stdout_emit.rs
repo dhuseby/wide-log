@@ -121,3 +121,63 @@ fn dropped_events_counter_is_loadable() {
     // above exercise the actual submit path.
     let _ = wide_log::stdout_emit::dropped_events();
 }
+
+/// Run `cargo run --example bounded_emit`, returning captured stdout and
+/// exit code. Mirrors `run_basic_example`.
+fn run_bounded_example() -> (String, i32) {
+    let output = Command::new(cargo_bin())
+        .args(["run", "--example", "bounded_emit", "--quiet"])
+        .output()
+        .expect("failed to spawn `cargo run --example bounded_emit`");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+/// The bounded-channel emit mode (`set_channel_capacity(Bounded(n))`) must
+/// produce the same bare-JSON-line format on stdout as the default
+/// unbounded mode — the channel capacity only changes the in-flight
+/// buffering / backpressure behavior, not the output format. This also
+/// verifies the bounded example doesn't deadlock or drop events under a
+/// 20-event burst with capacity 8.
+#[test]
+fn bounded_emit_writes_bare_json_to_stdout() {
+    let (stdout, code) = run_bounded_example();
+    assert_eq!(code, 0, "bounded example exited non-zero; stdout:\n{stdout}");
+
+    let parsed = first_json_line(&stdout);
+    assert!(
+        parsed.is_object(),
+        "top-level stdout line is not a JSON object — bounded channel changed output format:\n{stdout}"
+    );
+    assert_eq!(parsed["service"]["name"], "bounded-example");
+    assert_eq!(parsed["service"]["version"], "1.0.0");
+    assert_eq!(parsed["requests"], 1);
+
+    // The example logs 20 entries; none should be dropped under the bounded
+    // channel because each `info!` call appends to the in-event `log` array
+    // (not the channel), and only the single drop-emitted event is submitted.
+    let log = parsed["log"].as_array().expect("log array missing");
+    assert_eq!(log.len(), 20, "expected 20 log entries, got {}", log.len());
+    for (i, entry) in log.iter().enumerate() {
+        assert_eq!(entry["level"], "info");
+        assert_eq!(entry["message"], format!("request {i} received"));
+    }
+}
+
+/// The bounded example must not wrap its stdout line in a tracing envelope
+/// (i.e. it is the default `default_emit` writing bare JSON, only the channel
+/// capacity changed).
+#[test]
+fn bounded_emit_line_has_no_tracing_envelope_prefix() {
+    let (stdout, _) = run_bounded_example();
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("{\"service\":"))
+        .expect("no line starting with `{\"service\":...` in stdout:\n{stdout}");
+    assert!(
+        !line.contains("event="),
+        "bounded stdout line contains `event=` — looks like a tracing event:\n{line}"
+    );
+}

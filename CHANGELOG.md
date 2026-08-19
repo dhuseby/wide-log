@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] - 2026-08-18
+
+### Added
+- **Bounded channel with backpressure for the stdout writer thread.** The
+  writer thread's queue between producers and the single `wide-log-stdout`
+  thread is configurable via a new global, idempotent
+  `stdout_emit::set_channel_capacity(ChannelCapacity)` setter (mirroring
+  `set_flush_policy`: the first call wins, subsequent calls are silent
+  no-ops; it must be called before the first `submit` since the writer
+  starts lazily). The default remains `ChannelCapacity::Unbounded`, backed
+  by `mpsc::channel()`, so existing `submit` behavior is unchanged: it
+  never blocks and in-flight memory is bounded only by available memory.
+  Passing `ChannelCapacity::Bounded(n)` switches the queue to
+  `mpsc::sync_channel(n)`, so `submit` **blocks** when the `n`-event buffer
+  is full, applying backpressure from the writer thread to producers and
+  bounding in-flight memory at `n` events. `Bounded(0)` is clamped to 1
+  (a strict rendezvous channel) to avoid panicking.
+- `stdout_emit::ChannelCapacity` enum (`Unbounded` / `Bounded(usize)`,
+  `Default = Unbounded`, `Debug + Clone + Copy + PartialEq + Eq`) — the
+  configuration type for `set_channel_capacity`.
+- `stdout_emit::current_channel_capacity()` — accessor returning the
+  current capacity (or `Unbounded` if unset), for testing and inspection.
+- `stdout_emit::try_submit(Vec<u8>) -> bool` — non-blocking variant of
+  `submit`. On the unbounded channel it behaves identically to `submit`.
+  On a bounded channel it returns immediately: if the buffer is full the
+  payload is dropped (counted by `dropped_events`) and `false` is returned;
+  if the channel is closed the payload is dropped and `false` is returned.
+  Returns `true` when the line was enqueued. Use this when you want the
+  bounded channel's bounded-memory property without stalling the producer
+  on backpressure (i.e. when freshness of the current event matters more
+  than delivering every prior event).
+- `examples/bounded_emit.rs` — demonstrates
+  `set_channel_capacity(ChannelCapacity::Bounded(8))` followed by a 20-event
+  burst, showing the producer blocks instead of growing the queue
+  unboundedly. The emitted stdout line is identical in format to
+  `examples/basic.rs` (the bounded channel changes only the in-flight
+  buffering/backpressure, not the output format).
+- Two integration tests in `tests/stdout_emit.rs` running the bounded
+  example as a subprocess, asserting it emits the same bare-JSON format
+  and that all 20 log entries survive a burst with capacity 8 (no
+  deadlock, no drops).
+- Five unit tests in `src/stdout_emit.rs` covering `ChannelCapacity`
+  defaults/derives, idempotent `set_channel_capacity` (via a local
+  `OnceLock` to avoid touching the global), `Bounded(0)` clamping, and
+  `try_submit` on the unbounded path.
+
+### Changed
+- The internal `SENDER` static in `src/stdout_emit.rs` changed from
+  `OnceLock<Sender<Job>>` to `OnceLock<ChannelSender>`, where
+  `ChannelSender` is a new private enum wrapping the unbounded
+  `Sender<Job>` and the bounded `SyncSender<Job>` behind a single
+  process-global `OnceLock`. The `init_sender` function branches on
+  `current_channel_capacity()` to construct the matching channel and
+  spawn the writer thread. The `Receiver<Job>` end is shared between
+  both channel types, so `writer_loop` is unchanged. Public senders
+  (`submit`, `try_submit`, `flush`) route through `ChannelSender::send` /
+  `try_send`, which map the closed-channel `SendError<Job>` /
+  `TrySendError::Full(Job)` / `TrySendError::Disconnected(Job)` back to
+  the dropped `Job` so the `DROPPED` counter increments uniformly.
+- Module docs for `stdout_emit` updated with a new "Phase 5: bounded
+  channel with backpressure" section describing the durability/memory
+  tradeoff and pointing at `try_submit` for the non-blocking variant.
+
+### Notes
+- This is an additive change: no existing public API is altered or
+  removed. The default `ChannelCapacity::Unbounded` preserves the
+  pre-0.6.6 `submit` semantics exactly. The `wide-log-macros` crate is
+  unchanged on this branch.
+
 ## [0.6.5] - 2026-08-18
 
 ### Fixed

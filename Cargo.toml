@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "wide-log"
-version = "0.6.5"
+version = "0.6.6"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 rust-version = "1.88"
@@ -107,6 +107,13 @@ required-features = ["tokio"]
 
 [[example]]
 name = "custom_keys"
+
+[[example]]
+name = "tracing_default_emit"
+required-features = ["tracing"]
+
+[[example]]
+name = "bounded_emit"
 
 [[example]]
 name = "tracing_emit"
