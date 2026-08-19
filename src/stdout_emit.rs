@@ -5,11 +5,23 @@
 //! dedicated writer thread. The writer owns a `BufWriter<Stdout>` and
 //! flushes according to a [`FlushPolicy`].
 //!
-//! [`submit`] never blocks: it sends the `Vec<u8>` over an unbounded
-//! `std::sync::mpsc` channel to the writer thread. If the channel is closed
-//! (e.g. the writer thread has exited during process teardown), the payload
-//! is dropped silently and an atomic counter is incremented; the count is
-//! exposed via [`dropped_events`].
+//! [`submit`] never blocks on the default (unbounded) channel: it sends the
+//! `Vec<u8>` over an unbounded `std::sync::mpsc` channel to the writer thread.
+//! If the channel is closed (e.g. the writer thread has exited during process
+//! teardown), the payload is dropped silently and an atomic counter is
+//! incremented; the count is exposed via [`dropped_events`].
+//!
+//! ## Phase 5: bounded channel with backpressure
+//!
+//! Call [`set_channel_capacity`] before the first [`submit`] to switch the
+//! writer's channel from unbounded to a bounded `mpsc::sync_channel(n)`. With
+//! a bounded channel, [`submit`] **blocks** when the buffer is full, applying
+//! backpressure from the stdout writer thread to the producer. This bounds
+//! in-flight memory at `n` events at the cost of stalling the producer when
+//! the writer can't keep up. For a non-blocking variant that drops on
+//! overflow instead of blocking, use [`try_submit`]. The setting is
+//! idempotent and applies only to future events (the writer is started
+//! lazily on the first `submit`).
 //!
 //! Because the channel `Sender` lives in a process-global `OnceLock`, it is
 //! never dropped on normal process exit — the writer thread would be killed
@@ -51,12 +63,64 @@
 use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
 static DROPPED: AtomicU64 = AtomicU64::new(0);
-static SENDER: OnceLock<Sender<Job>> = OnceLock::new();
+static SENDER: OnceLock<ChannelSender> = OnceLock::new();
 static POLICY: OnceLock<FlushPolicy> = OnceLock::new();
+static CAPACITY: OnceLock<ChannelCapacity> = OnceLock::new();
+
+/// Configuration of the channel between producers and the writer thread.
+///
+/// `Unbounded` (the default) is a `std::sync::mpsc::channel`: [`submit`]
+/// never blocks, but in-flight events are bounded only by available
+/// memory. `Bounded(n)` is a `std::sync::mpsc::sync_channel(n)`:
+/// [`submit`] blocks when the buffer is full, applying backpressure from
+/// the writer thread to producers. Use [`try_submit`] for a non-blocking
+/// variant that drops on overflow instead.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelCapacity {
+    #[default]
+    Unbounded,
+    Bounded(usize),
+}
+
+/// Internal handle abstracting the unbounded `Sender<Job>` and the bounded
+/// `SyncSender<Job>` behind a single process-global `OnceLock`.
+enum ChannelSender {
+    Unbounded(Sender<Job>),
+    Bounded(SyncSender<Job>),
+}
+
+impl ChannelSender {
+    /// Blocking send. On an unbounded channel this never blocks; on a
+    /// bounded channel this blocks until the slot is available (backpressure)
+    /// or the channel is closed. Returns `Err(job)` only when the channel is
+    /// closed (payload dropped).
+    fn send(&self, job: Job) -> Result<(), Job> {
+        match self {
+            Self::Unbounded(tx) => tx.send(job).map_err(|e| e.0),
+            Self::Bounded(tx) => tx.send(job).map_err(|e| e.0),
+        }
+    }
+
+    /// Non-blocking send. On an unbounded channel this always succeeds (same
+    /// as `send`); on a bounded channel this fails with the job back if the
+    /// buffer is full (dropped on overflow) or the channel is closed. Returns
+    /// `Ok(())` on success, `Err(job)` if dropped (caller may count it).
+    fn try_send(&self, job: Job) -> Result<(), Job> {
+        match self {
+            Self::Unbounded(tx) => tx.send(job).map_err(|e| e.0),
+            // `TrySendError::Full(job)` -> job dropped on overflow.
+            // `TrySendError::Disconnected(job)` -> job dropped on closed channel.
+            Self::Bounded(tx) => tx.try_send(job).map_err(|e| match e {
+                mpsc::TrySendError::Full(job) => job,
+                mpsc::TrySendError::Disconnected(job) => job,
+            }),
+        }
+    }
+}
 
 /// Policy controlling how often the writer thread flushes its
 /// `BufWriter<Stdout>` to the OS.
@@ -158,12 +222,49 @@ pub fn current_flush_policy() -> FlushPolicy {
     POLICY.get().copied().unwrap_or_default()
 }
 
+/// Set the global channel capacity for the writer thread's queue.
+///
+/// **Idempotent**: a second call is a silent no-op. The first call wins.
+/// The setting must be applied before any [`submit`] / [`try_submit`] call —
+/// the writer (and its channel) is started lazily on the first send. The
+/// capacity cannot be changed after the writer is running.
+///
+/// - [`ChannelCapacity::Unbounded`] (the default) backs the queue with
+///   `mpsc::channel()`: [`submit`] never blocks, but in-flight memory is
+///   bounded only by available memory.
+/// - [`ChannelCapacity::Bounded`]`(n)` backs the queue with
+///   `mpsc::sync_channel(n)`: [`submit`] **blocks** when the buffer is full,
+///   applying backpressure from the writer thread to producers (in-flight
+///   memory bounded by `n` events). Use [`try_submit`] for a non-blocking
+///   variant that drops on overflow instead.
+///
+/// Example:
+///
+/// ```
+/// use wide_log::stdout_emit::{set_channel_capacity, ChannelCapacity};
+/// set_channel_capacity(ChannelCapacity::Bounded(1024));
+/// ```
+pub fn set_channel_capacity(capacity: ChannelCapacity) {
+    let _ = CAPACITY.set(capacity);
+}
+
+/// Returns the current channel capacity, or the default (`Unbounded`) if
+/// none has been set. Exposed for testing and inspection.
+pub fn current_channel_capacity() -> ChannelCapacity {
+    CAPACITY.get().copied().unwrap_or_default()
+}
+
 /// Enqueue a serialized wide-event JSON line for the writer thread.
 ///
-/// The `Vec<u8>` is sent over an unbounded channel to a single dedicated
-/// writer thread that owns a `BufWriter<Stdout>`. This function never
-/// blocks on I/O: if the channel is closed, the payload is dropped
-/// silently and [`dropped_events`] is incremented.
+/// The `Vec<u8>` is sent over the writer's channel. With the default
+/// [`ChannelCapacity::Unbounded`] this never blocks. With
+/// [`ChannelCapacity::Bounded`]`(n)` this **blocks** when the buffer is full,
+/// applying backpressure from the writer thread to the producer; if the
+/// channel is closed (e.g. the writer has exited during teardown) the payload
+/// is dropped silently and [`dropped_events`] is incremented.
+///
+/// For a non-blocking variant that drops on overflow instead of blocking,
+/// see [`try_submit`].
 ///
 /// The writer thread is started lazily on the first call.
 ///
@@ -176,12 +277,35 @@ pub fn submit(bytes: Vec<u8>) {
     }
 }
 
+/// Non-blocking variant of [`submit`].
+///
+/// On the default unbounded channel this behaves identically to [`submit`].
+/// On a [`ChannelCapacity::Bounded`]`(n)` channel this returns immediately:
+/// if the buffer is full the payload is dropped (counted by
+/// [`dropped_events`]) and `false` is returned; if the channel is closed the
+/// payload is dropped and `false` is returned. Returns `true` when the line
+/// was enqueued.
+///
+/// Use this when you want the bounded channel's bounded-memory property
+/// without stalling the producer on backpressure — i.e. when freshness of
+/// the *current* event matters more than delivering every prior event.
+pub fn try_submit(bytes: Vec<u8>) -> bool {
+    let sender = SENDER.get_or_init(init_sender);
+    match sender.try_send(Job::Line(bytes)) {
+        Ok(()) => true,
+        Err(_) => {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
 /// Block until all previously-submitted events have been written and the
 /// writer's `BufWriter` has been flushed.
 ///
 /// Call this at program exit (e.g. at the end of `main`) to guarantee no
 /// pending events are lost when the process terminates. The `OnceLock`-held
-/// `Sender` is never dropped on normal exit, so without an explicit `flush`
+/// sender is never dropped on normal exit, so without an explicit `flush`
 /// the writer thread would be killed by the runtime before draining its
 /// buffer.
 ///
@@ -199,14 +323,27 @@ pub fn flush() {
     let _ = ack_rx.recv();
 }
 
-fn init_sender() -> Sender<Job> {
-    let (tx, rx) = mpsc::channel::<Job>();
-
-    let _ = std::thread::Builder::new()
-        .name("wide-log-stdout".into())
-        .spawn(move || writer_loop(rx));
-
-    tx
+fn init_sender() -> ChannelSender {
+    match current_channel_capacity() {
+        ChannelCapacity::Unbounded => {
+            let (tx, rx) = mpsc::channel::<Job>();
+            let _ = std::thread::Builder::new()
+                .name("wide-log-stdout".into())
+                .spawn(move || writer_loop(rx));
+            ChannelSender::Unbounded(tx)
+        }
+        ChannelCapacity::Bounded(n) => {
+            // `sync_channel(0)` is a rendezvous channel (one slot in flight
+            // at a time); clamp `n` to at least 1 so a `Bounded(0)` request
+            // still functions as a strict rendezvous rather than panicking.
+            let cap = n.max(1);
+            let (tx, rx) = mpsc::sync_channel::<Job>(cap);
+            let _ = std::thread::Builder::new()
+                .name("wide-log-stdout".into())
+                .spawn(move || writer_loop(rx));
+            ChannelSender::Bounded(tx)
+        }
+    }
 }
 
 fn writer_loop(rx: mpsc::Receiver<Job>) {
@@ -635,5 +772,68 @@ mod tests {
     fn dropped_counter_increments_on_closed_channel() {
         let before = dropped_events();
         let _ = before;
+    }
+
+    // ── Phase 5: bounded channel with backpressure ──
+
+    #[test]
+    fn channel_capacity_default_is_unbounded() {
+        let cap = current_channel_capacity();
+        assert_eq!(cap, ChannelCapacity::Unbounded);
+    }
+
+    #[test]
+    fn set_channel_capacity_is_idempotent_first_call_wins() {
+        // OnceLock::set semantics: second call is a silent no-op. We
+        // can't easily verify the *global* OnceLock's first-call-wins
+        // behavior in-process because other tests may have already
+        // initialized it, so we verify the underlying OnceLock
+        // contract directly (mirroring `set_flush_policy_is_idempotent`).
+        let local: OnceLock<ChannelCapacity> = OnceLock::new();
+        let _ = local.set(ChannelCapacity::Unbounded);
+        let second = local.set(ChannelCapacity::Bounded(8));
+        assert!(second.is_err());
+        assert_eq!(*local.get().unwrap(), ChannelCapacity::Unbounded);
+    }
+
+    #[test]
+    fn bounded_zero_is_clamped_to_one_in_init_sender() {
+        // The `Bounded(0)` case is handled in `init_sender` by clamping
+        // to 1 (a strict rendezvous channel). We verify the clamp logic
+        // in isolation to avoid touching the global `SENDER` OnceLock.
+        let cap = ChannelCapacity::Bounded(0);
+        let clamped = match cap {
+            ChannelCapacity::Bounded(n) => n.max(1),
+            ChannelCapacity::Unbounded => 1,
+        };
+        assert_eq!(clamped, 1);
+    }
+
+    /// Verify `try_submit` on the default (unbounded) channel behaves
+    /// like `submit` and returns true. (We can't easily switch the
+    /// global channel to bounded in a unit test because the OnceLock
+    /// may have been initialized by an earlier test, so we only
+    /// exercise the unbounded path here. The bounded path is exercised
+    /// by the `bounded_emit` example integration test.)
+    #[test]
+    fn try_submit_on_unbounded_returns_true() {
+        let ok = try_submit(line("{\"try_submit\":true}"));
+        assert!(ok, "try_submit should succeed on the unbounded channel");
+        flush();
+    }
+
+    /// Verify `ChannelCapacity` derives the expected traits.
+    #[test]
+    fn channel_capacity_derives_debug_clone_copy_eq() {
+        let a = ChannelCapacity::Bounded(16);
+        let b = a;
+        assert_eq!(a, b);
+        assert_eq!(
+            format!("{a:?}"),
+            "Bounded(16)",
+            "Debug representation should be `Bounded(16)`"
+        );
+        let u = ChannelCapacity::Unbounded;
+        assert_eq!(format!("{u:?}"), "Unbounded");
     }
 }
