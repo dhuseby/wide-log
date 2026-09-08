@@ -23,7 +23,7 @@
 //! cargo run --example bounded_emit
 //! ```
 
-use wide_log::stdout_emit::{set_channel_capacity, ChannelCapacity};
+use wide_log::stdout_emit::{ChannelCapacity, set_channel_capacity};
 use wide_log::wide_log;
 
 wide_log!({

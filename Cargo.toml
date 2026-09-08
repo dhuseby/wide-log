@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "wide-log"
-version = "0.6.6"
+version = "0.7.0"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 rust-version = "1.88"
@@ -26,29 +26,39 @@ smallvec = { version = "1", features = ["union", "serde"] }
 sonic-rs = "=0.5.8"
 thiserror = "2"
 ulid = "3"
-wide-log-macros = { version = "0.6.5", path = "wide-log-macros" }
+wide-log-macros = { version = "0.7.0", path = "wide-log-macros" }
 
 # optional
 tokio = { version = "1", features = ["rt"], optional = true }
 tower = { version = "0", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [features]
 default = []
 tokio = ["dep:tokio", "dep:tower", "wide-log-macros/tokio"]
 uuid = ["dep:uuid", "wide-log-macros/uuid"]
-# When enabled, the macro-generated `default_emit` routes the
-# serialized event through `::tracing::info!(event = %json)` instead
-# of writing the bare JSON line to non-blocking stdout. A
-# one-time `eprintln!` warning is emitted on first use to remind the
-# user that this is a transition aid for migrating from
-# `tracing::info!` to `wide_log!` — for new code, prefer the
-# default (bare JSON to stdout) or a custom `with_emit` closure.
-# This feature does *not* add a runtime dep on `tracing`; the
-# generated code only references `::tracing::*` symbols, which
-# must be in scope in the user crate (e.g., from
-# `tracing-subscriber` or a custom subscriber).
-tracing = ["wide-log-macros/tracing"]
+# When the `tracing` feature is off (the default), wide-log is fully
+# standalone: it compiles the `info!`/`warn!`/`error!`/`debug!`/`trace!`
+# macros that append `{level, message}` entries to the active wide
+# event's `log` array directly.
+#
+# When the `tracing` feature is on, wide-log gains optional
+# dependencies on the `tracing` and `tracing-subscriber` crates, does
+# NOT compile its own level macros (the crate re-exports
+# `tracing`'s macros instead), and provides the macro-generated
+# `WideLogCaptureLayer` tracing-subscriber layer. While a wide-log
+# guard is active, the layer appends canonical `tracing` records
+# (from the application or any dependency crate) to the active
+# wide event's `log` array as `{level, message}` entries. Install
+# the layer in the subscriber stack:
+# `tracing_subscriber::registry().with(...).with(WideLogCaptureLayer).init()`.
+# The macro-generated `default_emit` routes the serialized event
+# through `::tracing::info!(target: "wide_log", event = %json)`;
+# the capture layer skips records with that reserved target so the
+# finished event is not re-captured into itself.
+tracing = ["dep:tracing", "dep:tracing-subscriber", "wide-log-macros/tracing"]
 
 [lints.rust]
 # The `loom` cfg is set by `RUSTFLAGS="--cfg loom"` when running
