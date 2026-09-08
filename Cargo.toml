@@ -127,3 +127,7 @@ name = "bounded_emit"
 
 [[example]]
 name = "tracing_emit"
+
+[[example]]
+name = "capture"
+required-features = ["tracing"]

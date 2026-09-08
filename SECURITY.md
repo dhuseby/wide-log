@@ -56,6 +56,14 @@ In-scope issues include, but are not limited to:
   at build time or runtime.
 - Proc-macro panics or UB affecting the build of downstream crates.
 
+Note on log content: captured tracing messages enter the wide event
+verbatim. Wide-log does not redact or filter record contents;
+applications must not emit secrets (passwords, tokens, keys) through
+`tracing` at levels the capture layer accepts. This is a usage
+contract, not a crate-enforced guarantee — content handling is out
+of scope for this policy unless a crate bug exposes data that the
+application never emitted.
+
 Out-of-scope:
 
 - Issues in the `tokio`, `tracing`, `chrono`, `ulid`, `sonic-rs`,
