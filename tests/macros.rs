@@ -14,6 +14,24 @@ wide_log!({
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+fn capture_subscriber() -> Option<tracing::subscriber::DefaultGuard> {
+    #[cfg(feature = "tracing")]
+    {
+        use tracing_subscriber::prelude::*;
+        Some(tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::WideLogCaptureLayer::new()),
+        ))
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        None
+    }
+}
+
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
 #[allow(clippy::type_complexity)]
@@ -39,6 +57,7 @@ fn parse(slot: &CaptureSlot) -> sonic_rs::Value {
 #[test]
 fn all_log_level_macros_literal() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("info message");
@@ -67,6 +86,7 @@ fn all_log_level_macros_literal() {
 #[test]
 fn all_log_level_macros_format_args() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("info {}", 1);
@@ -89,6 +109,7 @@ fn all_log_level_macros_format_args() {
 #[test]
 fn log_entries_accumulate_in_order() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("first");
@@ -330,6 +351,7 @@ fn wl_null_nested_path() {
 #[test]
 fn all_macros_noop_without_guard() {
     // None of these should panic.
+    let _sub = capture_subscriber();
     wl_set!("service.name", "noop");
     wl_set!("status", 42u64);
     wl_set!("flag", true);
@@ -355,7 +377,13 @@ fn all_macros_noop_without_guard() {
 }
 
 // ---- §5.5: info! shadowing tracing::info! ----
-
+//
+// These tests pin the feature-off macro surface: the generated
+// level macros exist and shadow `tracing`'s when both are in
+// scope. With the `tracing` feature on the generated macros are
+// not compiled (the crate re-exports `tracing`'s instead), so this
+// section is default-features only.
+#[cfg(not(feature = "tracing"))]
 #[test]
 fn info_shadows_tracing_info() {
     // When both `wide_log::info!` and `tracing::info!` are available,
@@ -395,6 +423,7 @@ fn info_shadows_tracing_info() {
     assert_eq!(log[1]["message"], "second wide-log entry");
 }
 
+#[cfg(not(feature = "tracing"))]
 #[test]
 fn all_log_macros_shadow_tracing() {
     // Bring all tracing log macros into scope.

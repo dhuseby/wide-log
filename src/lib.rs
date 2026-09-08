@@ -16,6 +16,9 @@
 //!
 //! ```
 //! use wide_log::wide_log;
+//! #[cfg(feature = "tracing")]
+//! #[allow(unused_imports)]
+//! use wide_log::{debug, error, info, trace, warn};
 //!
 //! wide_log!({
 //!     "service": {
@@ -55,6 +58,9 @@
 //!
 //! ```
 //! use wide_log::wide_log;
+//! #[cfg(feature = "tracing")]
+//! #[allow(unused_imports)]
+//! use wide_log::{debug, error, info, trace, warn};
 //!
 //! wide_log!([
 //!   Event.Id => "correlation_id",

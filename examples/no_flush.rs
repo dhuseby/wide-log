@@ -11,6 +11,22 @@
 
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::fmt()
+        .finish()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 wide_log!({
     "service": {
         "name": "example-service",
@@ -20,6 +36,7 @@ wide_log!({
 });
 
 fn main() {
+    init_capture();
     let _guard = WideLogGuard::builder().build();
 
     wl_inc!("requests");

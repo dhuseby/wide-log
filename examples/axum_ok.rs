@@ -5,6 +5,22 @@ use axum::routing::get;
 use tokio::sync::Notify;
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::fmt()
+        .finish()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 wide_log!({
     "service": {
         "name": null,
@@ -57,6 +73,7 @@ async fn fetch_upstream() {
 
 #[tokio::main]
 async fn main() {
+    init_capture();
     let done = Notify::new();
     DONE.set(done).unwrap();
 

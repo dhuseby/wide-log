@@ -26,6 +26,22 @@
 use wide_log::stdout_emit::{ChannelCapacity, set_channel_capacity};
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::fmt()
+        .finish()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 wide_log!({
     "service": {
         "name": null,
@@ -35,6 +51,7 @@ wide_log!({
 });
 
 fn main() {
+    init_capture();
     // Configure the writer's channel as a bounded `sync_channel(8)` before
     // the first `submit`. Idempotent: the first call wins; subsequent calls
     // are silent no-ops. Must be called before the writer is started (which

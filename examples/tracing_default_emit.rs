@@ -16,8 +16,7 @@
 //! cargo run --example tracing_default_emit --features tracing
 //! ```
 //!
-//! A one-time `eprintln!` is printed on first use reminding that this is a
-//! migration aid (not the default). The emitted stdout line is wrapped in the
+//! The emitted stdout line is wrapped in the
 //! tracing fmt envelope (timestamp, level, target), and the JSON is the
 //! value of the `event=` field rather than a bare top-level JSON object:
 //!
@@ -31,6 +30,22 @@
 
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::fmt()
+        .finish()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 wide_log!({
     "service": {
         "name": null,
@@ -40,6 +55,7 @@ wide_log!({
 });
 
 fn main() {
+    init_capture();
     // Install a tracing fmt subscriber so the generated `default_emit`'s
     // `::tracing::info!(event = %json)` produces an envelope-prefixed line
     // on stdout. Without a subscriber, the tracing call is a no-op.

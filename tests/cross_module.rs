@@ -22,6 +22,24 @@ use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 use std::sync::{Arc, Mutex};
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+fn capture_subscriber() -> Option<tracing::subscriber::DefaultGuard> {
+    #[cfg(feature = "tracing")]
+    {
+        use tracing_subscriber::prelude::*;
+        Some(tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::WideLogCaptureLayer::new()),
+        ))
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        None
+    }
+}
+
 wide_log!({
     "service": {
         "name": null,
@@ -63,6 +81,14 @@ fn parse(slot: &CaptureSlot) -> sonic_rs::Value {
 // bare name.
 mod child {
     use super::EventKey;
+    // Unqualified level calls in a child module resolve per feature
+    // mode through the parent re-export (`wide_log` re-exports
+    // `tracing`'s level macros with the feature on) or through the
+    // `#[macro_export]`-ed wide-log macro rules (feature off, which
+    // resolve in any module of the invoking crate without an import).
+    #[cfg(feature = "tracing")]
+    #[allow(unused_imports)]
+    use crate::{debug, error, info, trace, warn};
 
     pub fn emit_all_with_format_args() -> String {
         let _guard = super::WideLogGuard::builder().build();
@@ -102,6 +128,7 @@ fn format_arg_macros_compile_from_child_module() {
     // 0.6.1, `child::emit_all_with_format_args` would have failed
     // with `E0425: cannot find value 'FMT_BUF' in this scope`. The
     // call below would be a compile error.
+    let _sub = capture_subscriber();
     let result = child::emit_all_with_format_args();
     assert_eq!(result, "ok");
 }
@@ -112,6 +139,7 @@ fn format_arg_macros_emit_formatted_strings_from_child_module() {
     // must not only compile, they must also format the args
     // correctly and append the result to the `log` array.
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     child::emit_into_guard_with_format_args(emit);
     let json = parse(&slot);
 

@@ -20,6 +20,25 @@ use std::hint::black_box;
 use std::sync::{Arc, Mutex};
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    // Leaked on purpose: the subscriber must outlive every bench
+    // iteration, and the bench harness runs each function once per
+    // process.
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(crate::WideLogCaptureLayer::new()),
+    );
+    std::mem::forget(guard);
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 // A separate schema from `benches/core.rs` to make this file
 // self-contained. Includes nested objects (which are affected by
 // §2.4) and a counter.
@@ -46,6 +65,7 @@ fn noop_emit(_ev: &wide_log::WideEvent<EventKey>) {}
 /// Before Phase 3 this allocated a fresh `String::with_capacity(64)`
 /// per call. After Phase 3 it reuses a thread-local `FMT_BUF`.
 fn bench_fmt_buf(c: &mut Criterion) {
+    init_capture();
     let mut group = c.benchmark_group("phase3_fmt_buf");
 
     // info! with format args: a single dynamic allocation reused
@@ -221,11 +241,46 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------- log-message path cost ----------
+
+/// Cost of appending one log entry through the tracing dispatch
+/// path (capture layer + re-exported macros) versus the direct
+/// macro path (generated macros, feature off). Under the `tracing`
+/// feature the capture path runs; without it the direct macro path
+/// runs, so the group name reflects the mode being measured.
+#[cfg(feature = "tracing")]
+fn bench_capture_vs_macro(c: &mut Criterion) {
+    init_capture();
+    let mut group = c.benchmark_group("log_message_path");
+    group.bench_function("capture_layer", |b| {
+        b.iter(|| {
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
+            ::tracing::info!("capture path entry {}", 1);
+            drop(black_box(_guard));
+        })
+    });
+    group.finish();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn bench_capture_vs_macro(c: &mut Criterion) {
+    let mut group = c.benchmark_group("log_message_path");
+    group.bench_function("direct_macro", |b| {
+        b.iter(|| {
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
+            info!("capture path entry {}", 1);
+            drop(black_box(_guard));
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     phase3_benches,
     bench_fmt_buf,
     bench_ulid_buf,
     bench_with_id_str,
     bench_end_to_end,
+    bench_capture_vs_macro,
 );
 criterion_main!(phase3_benches);
