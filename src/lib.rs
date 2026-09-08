@@ -10,8 +10,9 @@
 //! enum, `Key` trait impl, thread-local storage, guard builder, `current()`
 //! accessor, `scope()` / `scope_default()` async functions (behind the
 //! `tokio` feature), `WideLogLayer` tower middleware (behind the `tokio`
-//! feature), and all logging macros (`wl_set!`, `wl_inc!`, `info!`, etc.) in
-//! one invocation.
+//! feature), the `WideLogCaptureLayer` capture layer (behind the `tracing`
+//! feature), and the logging macros (`wl_set!`, `wl_inc!`, and — when the
+//! `tracing` feature is off — `info!`, etc.) in one invocation.
 //!
 //! ```
 //! use wide_log::wide_log;
@@ -107,14 +108,54 @@
 //!
 //! UUIDv4 IDs are available with the `uuid` feature: `WideLogGuard::builder().with_uuid().build()`.
 //!
-//! ## `info!` Shadowing
+//! ## Log-Message Modes
 //!
-//! The generated `info!`, `warn!`, `error!`, `debug!`, `trace!` macros shadow
-//! `tracing::info!` etc. when both are in scope. To call the real tracing
-//! macros, use the fully qualified path: `::tracing::info!(...)`. (The default
-//! `default_emit` no longer routes through `tracing`; it writes the
-//! serialized JSON line directly to non-blocking stdout via
-//! [`stdout_emit::submit`].)
+//! The `tracing` feature selects how log messages reach the wide event:
+//!
+//! - **Feature off (default)** — the generated `info!`, `warn!`,
+//!   `error!`, `debug!`, `trace!` macros append
+//!   `{level, message}` entries to the active event's `log` array
+//!   directly. These macros shadow `tracing::info!` etc. when both
+//!   are in scope; to call the real tracing macros, use the fully
+//!   qualified path: `::tracing::info!(...)`. The default
+//!   `default_emit` writes the serialized JSON line to non-blocking
+//!   stdout via [`stdout_emit::submit`].
+//! - **Feature on** — the generated level macros are not compiled;
+//!   the crate re-exports `tracing`'s level macros instead, so
+//!   unqualified `info!` etc. resolve to canonical tracing. Records
+//!   emitted through the tracing subscriber (from the application
+//!   or any dependency crate) are appended to the active event's
+//!   `log` array by the generated `WideLogCaptureLayer`. See
+//!   "Capturing tracing records" below.
+//!
+//! ## Capturing tracing records
+//!
+//! With the `tracing` feature enabled, add the generated
+//! `WideLogCaptureLayer` to the tracing subscriber stack:
+//!
+//! ```text
+//! tracing_subscriber::registry()
+//!     .with(...)
+//!     .with(WideLogCaptureLayer)
+//!     .init();
+//! ```
+//!
+//! While a wide-log guard is active, every tracing record with level
+//! at or below the layer's configured floor (all levels by default;
+//! set a floor with `WideLogCaptureLayer::new().with_max_level(...)`)
+//! is appended to the active event's `log` array as a
+//! `{level, message}` entry and still forwarded to the other layers.
+//! A record with no `message` field renders its other fields as
+//! `name=value` text; a record with both appends the fields after
+//! the message. Records with no message and no fields are skipped.
+//!
+//! The generated `default_emit` routes the serialized event through
+//! `::tracing::info!(target: "wide_log", event = %json)`; the capture
+//! layer skips records with that reserved target, so the finished
+//! event is not re-captured into itself. Without a subscriber,
+//! tracing calls are no-ops and wide events still emit through the
+//! subscriber's own output path — in this mode a subscriber is
+//! required to see output.
 //!
 //! ## Features
 //!
@@ -122,6 +163,11 @@
 //!   `WideLogLayer` tower middleware, and `tokio::task_local!` storage.
 //! - `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
 //!   generation instead of the default ULID.
+//! - `tracing` — capture mode: adds optional `tracing` and
+//!   `tracing-subscriber` dependencies, stops compiling the generated
+//!   level macros (re-exports `tracing`'s instead), routes
+//!   `default_emit` through `::tracing::info!`, and provides the
+//!   `WideLogCaptureLayer` capture layer. See "Log-Message Modes".
 
 pub(crate) mod context;
 pub(crate) mod error;
@@ -181,8 +227,12 @@ pub mod stdout_emit;
 /// - `current()` — returns the innermost active event
 /// - `scope()` / `scope_default()` (behind `tokio` feature)
 /// - `WideLogLayer` tower middleware (behind `tokio` feature)
-/// - All logging macros: `wl_set!`, `wl_inc!`, `wl_dec!`, `wl_add!`,
-///   `wl_null!`, `info!`, `warn!`, `error!`, `debug!`, `trace!`
+/// - `WideLogCaptureLayer` capture layer (behind `tracing` feature)
+/// - Logging macros: `wl_set!`, `wl_inc!`, `wl_dec!`, `wl_add!`,
+///   `wl_null!` always; the level macros `info!`, `warn!`, `error!`,
+///   `debug!`, `trace!` only when the `tracing` feature is off
+///   (with the feature on, the crate re-exports `tracing`'s level
+///   macros and records are captured via `WideLogCaptureLayer`)
 ///
 /// # Value Markers
 ///
@@ -226,3 +276,11 @@ pub mod __re_exports_core {
 pub mod __re_exports_uuid {
     pub use uuid;
 }
+
+// With the `tracing` feature on, the generated level macros are not
+// compiled. Re-export `tracing`'s level macros at the crate root so
+// unqualified `info!`/`warn!`/`error!`/`debug!`/`trace!` call sites
+// resolve to canonical tracing (captured into the active wide event
+// through the `WideLogCaptureLayer` layer) without app-code edits.
+#[cfg(feature = "tracing")]
+pub use ::tracing::{debug, error, info, trace, warn};
