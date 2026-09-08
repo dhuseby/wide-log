@@ -201,7 +201,7 @@ async fn concurrent_tasks_have_separate_events() {
     }
 }
 
-// ---- WideLogLayer middleware test (§4.2 / Phase 7) ----
+// ---- WideLogLayer middleware test ----
 
 use std::convert::Infallible;
 use wide_log::__re_exports::tower::{Layer, Service};
@@ -331,7 +331,7 @@ async fn middleware_with_preset_applies_to_request() {
     assert_eq!(parsed["status"], "running");
 }
 
-// ---- Phase 1: scope cancellation ----
+// ---- scope cancellation ----
 
 #[tokio::test]
 async fn scope_emits_on_cancellation() {
@@ -377,7 +377,7 @@ async fn scope_emits_on_cancellation() {
     assert!(parsed["event"]["id"].is_str());
 }
 
-// ---- Phase 6: concurrency stress test ----
+// ---- concurrency stress test ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_thousand_concurrent_scopes() {

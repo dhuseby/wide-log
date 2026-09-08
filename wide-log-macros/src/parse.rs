@@ -795,7 +795,7 @@ mod tests {
         assert!(err.contains("expected ',' after override list"));
     }
 
-    // ── Override validation tests (§4.5) ──
+    // ── Override validation tests ──
 
     #[test]
     fn err_empty_override_value() {

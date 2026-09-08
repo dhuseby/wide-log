@@ -116,7 +116,7 @@ fn handle_request(method: &str, path: &str) {
 | Enter a span | `let _e = span.enter();` | `let _g = WideLogGuard::builder().build();` |
 | Field updates | `tracing::Span::current().record("key", &value)` | `wl_set!("key", value)` |
 | Increment counter | `tracing::Span::current().record("count", ...)` (manual) | `wl_inc!("count")` |
-| Nested span | `let _e2 = inner_span.enter();` | `scope(|ev| ..., async { ... });` (async) or nested builder (sync, see §2.1) |
+| Nested span | `let _e2 = inner_span.enter();` | `scope(|ev| ..., async { ... });` (async) or nested builder (sync, see the "Nested sync scopes" section) |
 | Drop the guard | `drop(_e);` or end of scope | `drop(_g);` or end of scope — `#[must_use]` catches `let _ = _g;` |
 
 ### 2.1 Nested sync scopes
@@ -466,7 +466,6 @@ When porting an existing `tracing`-based service to `wide-log`:
 
 - [README.md](./README.md) — quick start, builder pattern, macro reference
 - [CHANGELOG.md](./CHANGELOG.md) — full release notes (latest: 0.6.3)
-- [baselines/phase9_final.md](./baselines/phase9_final.md) — performance benchmarks
 - [`examples/basic.rs`](./examples/basic.rs) — minimal `wide_log!` usage
 - [`examples/axum_ok.rs`](./examples/axum_ok.rs) — `WideLogLayer` with axum
 - [`examples/tracing_emit.rs`](./examples/tracing_emit.rs) — custom emit that routes through `tracing`

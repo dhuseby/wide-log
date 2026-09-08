@@ -429,7 +429,7 @@ impl GenContext {
             ));
         }
 
-        // §4.4: detect user-declared default for `event.id` that will be
+        // Detect a user-declared default for `event.id` that will be
         // silently overwritten by the default ULID generator at build time.
         // We only warn/error if a default is present; if the user has set
         // a custom id_fn via `with_id` (or `with_uuid`) they get to keep
@@ -649,7 +649,7 @@ impl GenContext {
                 pub static FIELDS_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
 
-                // Phase 3 §3.2: reusable thread-local ULID buffer.
+                // Reusable thread-local ULID buffer.
                 // The default id generator writes a 26-character
                 // ULID string into this buffer and `.clone()`s the
                 // result for the caller's owned `String`. The
@@ -715,7 +715,7 @@ impl GenContext {
                             // The serializer only writes valid UTF-8, so the
                             // bytes form a valid JSON line. We send the
                             // `Vec<u8>` directly to the writer thread
-                            // (Phase 2 §1.2: no `from_utf8_unchecked`, no
+                            // (no `from_utf8_unchecked`, no
                             // `Vec::split_off(0)` copy). The writer
                             // appends no trailing `'\n'` of its own —
                             // we do that here so the producer is
@@ -757,14 +757,13 @@ impl GenContext {
             > {
                 // The ScopedGuard is boxed to avoid parameterizing the
                 // macro-generated guard over `K: Key` (we know `K =
-                // EventKey` here). Phase 3 §3.3 was originally going
-                // to inline the fields, but `WideEvent`'s mutators
-                // are `pub(crate)` and the macro is expanded in user
-                // code (tests, examples) which doesn't have `crate`
-                // access. Leaving the `Box` indirection; a future
-                // release can add a `pub` constructor or move the
-                // `WideEvent` API surface needed by the macro into a
-                // public `__macro_internals` module.
+                // EventKey` here). Inlining the fields is not possible
+                // because `WideEvent`'s mutators are `pub(crate)` and
+                // the macro is expanded in user code (tests, examples)
+                // which doesn't have `crate` access. A future release
+                // can add a `pub` constructor or move the `WideEvent`
+                // API surface needed by the macro into a public
+                // `__macro_internals` module.
                 inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
                 /// The previous value of `CURRENT_EVENT` for restoration
                 /// on drop.
@@ -791,9 +790,9 @@ impl GenContext {
         };
 
         let default_id_fn = quote! {
-            // Phase 3 §3.2: write the ULID into a thread-local
-            // reusable buffer and return a clone. The buffer's
-            // allocation is preserved across calls.
+            // Write the ULID into a thread-local reusable buffer and
+            // return a clone. The buffer's allocation is preserved
+            // across calls.
             ::std::boxed::Box::new(|| {
                 ULID_BUF.with(|buf| {
                     let mut buf = buf.borrow_mut();
@@ -847,13 +846,13 @@ impl GenContext {
                     self
                 }
 
-                // Phase 1.3 / issue #24: pre-set constant fields on the
+                // Pre-set constant fields on the
                 // builder so they are applied to every event created from
                 // this builder (or from `scope_with_defaults()` / a
                 // `WideLogLayer` configured with this preset) without a
                 // per-request `wl_set!` call. The closure is stored in an
                 // `Arc` so it can be cheaply cloned and shared across
-                // tasks/connections.
+                // tasks/connections. See issue #24.
                 //
                 // Accepts any `Fn + Send + Sync + 'static` closure (which
                 // is wrapped in an `Arc`) OR an existing `Arc<dyn Fn ...>`
@@ -882,7 +881,7 @@ impl GenContext {
                     self
                 }
 
-                // Phase 3 §3.4: a `&'static str` overload of
+                // A `&'static str` overload of
                 // `with_id` that avoids the closure + `Box<dyn FnOnce>`
                 // indirection for the common case of a fixed id.
                 // The user can still call the closure-based
@@ -997,16 +996,13 @@ impl GenContext {
                 /// recommended pattern if you need to temporarily
                 /// disarm a guard).
                 ///
-                /// [Phase 2] refactored the storage from a raw
-                /// `*mut WideEvent` field to a `Box<ScopedGuard>` +
-                /// raw `*const WideEvent` (for the previous-pointer
+                /// The storage is a `Box<ScopedGuard>` plus a raw
+                /// `*const WideEvent` (for the previous-pointer
                 /// value), so the auto-derived `Send + Sync` is
                 /// sound and the unsafe is concentrated in this
                 /// single function. The `mem::forget` soundness
-                /// hole is **unchanged** by Phase 2; it is a
-                /// pre-existing limitation of the guard pattern.
-                ///
-                /// [Phase 2]: https://github.com/dhuseby/wide-log/blob/main/CHANGELOG.md
+                /// hole is a pre-existing limitation of the guard
+                /// pattern.
                 fn drop(&mut self) {
                     // The ScopedGuard inside `inner` drops first (Rust
                     // drops fields in declaration order), which sets

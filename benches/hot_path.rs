@@ -1,19 +1,19 @@
-//! Phase 3 hot-path benchmarks.
+//! Hot-path benchmarks.
 //!
-//! These benchmarks focus on the specific optimizations introduced in
-//! Phase 3 of the implementation plan:
+//! These benchmarks isolate the cost of individual hot-path
+//! operations and the buffers behind them:
 //!
-//! - **§3.1**: reusable thread-local `FMT_BUF` for `info!`/`warn!`/`error!`/
+//! - Reusable thread-local `FMT_BUF` for `info!`/`warn!`/`error!`/
 //!   `debug!`/`trace!` with format args (eliminates the
 //!   `String::with_capacity(64)` allocation per call).
-//! - **§3.2**: reusable thread-local `ULID_BUF` for the default event id
+//! - Reusable thread-local `ULID_BUF` for the default event id
 //!   (eliminates the per-guard ULID `String` allocation).
-//! - **§3.4**: `with_id_str(&'static str)` overload (avoids the
+//! - `with_id_str(&'static str)` overload (avoids the
 //!   `Box<dyn FnOnce>` indirection for fixed ids).
 //!
-//! The full-lifecycle end-to-end benchmark from `benches/core.rs` is
-//! kept there. This file focuses on the **delta** between the old
-//! and new implementations.
+//! The full-lifecycle end-to-end benchmark lives in
+//! `benches/core.rs`; this file focuses on the per-operation cost
+//! of each optimization.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -40,8 +40,8 @@ fn init_capture() {
 fn init_capture() {}
 
 // A separate schema from `benches/core.rs` to make this file
-// self-contained. Includes nested objects (which are affected by
-// §2.4) and a counter.
+// self-contained. Includes nested objects (which exercise the
+// existing-child reuse path on the guard's drop) and a counter.
 wide_log!({
     "service": {
         "name": null,
@@ -58,18 +58,17 @@ wide_log!({
 // No-op emit — isolates accumulation cost from serialization.
 fn noop_emit(_ev: &wide_log::WideEvent<EventKey>) {}
 
-// ---------- §3.1: FMT_BUF ----------
+// ---------- FMT_BUF ----------
 
-/// Phase 3 §3.1: a single `info!` call with format args.
-///
-/// Before Phase 3 this allocated a fresh `String::with_capacity(64)`
-/// per call. After Phase 3 it reuses a thread-local `FMT_BUF`.
+/// A single `info!` call with format args, backed by the
+/// reusable thread-local `FMT_BUF` (one allocation, reused
+/// across calls).
 fn bench_fmt_buf(c: &mut Criterion) {
     init_capture();
     let mut group = c.benchmark_group("phase3_fmt_buf");
 
     // info! with format args: a single dynamic allocation reused
-    // across calls (was: 1 alloc/call before Phase 3).
+    // across calls.
     group.bench_function("info_format_args", |b| {
         b.iter(|| {
             let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
@@ -78,8 +77,7 @@ fn bench_fmt_buf(c: &mut Criterion) {
         })
     });
 
-    // info! literal: was already zero-alloc, but we measure to
-    // confirm we haven't regressed.
+    // info! literal: zero-alloc; measured to catch regressions.
     group.bench_function("info_literal", |b| {
         b.iter(|| {
             let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
@@ -89,7 +87,7 @@ fn bench_fmt_buf(c: &mut Criterion) {
     });
 
     // 10 info! calls: amortized cost should be much lower than 10x
-    // the single-call cost after Phase 3.
+    // the single-call cost.
     group.bench_function("info_format_args_10x", |b| {
         b.iter(|| {
             let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
@@ -103,17 +101,16 @@ fn bench_fmt_buf(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------- §3.2: ULID_BUF ----------
+// ---------- ULID_BUF ----------
 
-/// Phase 3 §3.2: the default event id generator.
-///
-/// Before Phase 3 the default `id_fn` allocated a fresh `String`
-/// per guard. After Phase 3 it reuses a thread-local `ULID_BUF`.
+/// The default event id generator, backed by the reusable
+/// thread-local `ULID_BUF` (one allocation, reused across
+/// guards).
 fn bench_ulid_buf(c: &mut Criterion) {
     let mut group = c.benchmark_group("phase3_ulid_buf");
 
-    // Default id (ULID): single guard create+drop. Was 1 alloc/guard
-    // before Phase 3, now 0 (the buffer is reused across guards).
+    // Default id (ULID): single guard create+drop, zero steady-state
+    // allocation (the buffer is reused across guards).
     group.bench_function("default_id_create_drop", |b| {
         b.iter(|| {
             let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
@@ -135,13 +132,13 @@ fn bench_ulid_buf(c: &mut Criterion) {
     group.finish();
 }
 
-// ---------- §3.4: with_id_str ----------
+// ---------- with_id_str ----------
 
-/// Phase 3 §3.4: `with_id_str` vs `with_id` (closure).
+/// `with_id_str` vs `with_id` (closure).
 ///
-/// `with_id_str` is the new `&'static str` overload that avoids the
-/// `Box<dyn FnOnce>` indirection. The old `with_id` is still
-/// available for dynamic ids.
+/// `with_id_str` is the `&'static str` overload that avoids the
+/// `Box<dyn FnOnce>` indirection. The closure-based `with_id` is
+/// still available for dynamic ids.
 fn bench_with_id_str(c: &mut Criterion) {
     let mut group = c.benchmark_group("phase3_with_id");
 
@@ -175,9 +172,8 @@ fn bench_with_id_str(c: &mut Criterion) {
 
 /// End-to-end hot path: guard create + a few field sets + a log
 /// message + drop. This is the most representative single-event
-/// workload for wide-log.
-///
-/// Captures the cumulative effect of all Phase 3 optimizations.
+/// workload for wide-log, and captures the cumulative effect of
+/// the reusable-buffer optimizations above.
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
 fn capture_emit() -> (

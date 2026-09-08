@@ -11,7 +11,7 @@
 //! teardown), the payload is dropped silently and an atomic counter is
 //! incremented; the count is exposed via [`dropped_events`].
 //!
-//! ## Phase 5: bounded channel with backpressure
+//! ## Bounded channel with backpressure
 //!
 //! Call [`set_channel_capacity`] before the first [`submit`] to switch the
 //! writer's channel from unbounded to a bounded `mpsc::sync_channel(n)`. With
@@ -30,7 +30,7 @@
 //! written and the `BufWriter` flushed. (Forced termination such as `SIGKILL`
 //! will still lose any bytes buffered in the writer thread.)
 //!
-//! ## Phase 2: `Vec<u8>` pipeline
+//! ## Byte pipeline
 //!
 //! The producer's `Vec<u8>` is sent over the channel directly — no
 //! `String` conversion, no `from_utf8_unchecked`, no `Vec::split_off(0)`
@@ -38,7 +38,7 @@
 //! to the `BufWriter`. A trailing `'\n'` is appended by the producer
 //! (in `default_emit`) so the writer's hot path is just a `write_all`.
 //!
-//! ## Phase 4: batched flush (`FlushPolicy`)
+//! ## Batched flush (`FlushPolicy`)
 //!
 //! The default [`FlushPolicy::default`] batches up to 100 ms, 8 KiB, or
 //! 1000 lines before issuing a `flush()` syscall. This dramatically
@@ -161,9 +161,8 @@ impl Default for FlushPolicy {
 }
 
 impl FlushPolicy {
-    /// Maximum-durability policy: flush after every line. This is
-    /// equivalent to the pre-Phase-4 behavior. Use this for
-    /// low-volume paths where each line must reach the OS before
+    /// Maximum-durability policy: flush after every line. Use this
+    /// for low-volume paths where each line must reach the OS before
     /// the next event, or for tests that want deterministic output.
     pub const fn per_line() -> Self {
         Self {
@@ -195,9 +194,8 @@ pub fn dropped_events() -> u64 {
 /// Set the global flush policy.
 ///
 /// **Idempotent**: a second call is a silent no-op. The first call wins.
-/// This matches the plan's requirement and matches the rest of
-/// wide-log's process-global state (the `SENDER` `OnceLock` is
-/// also never reset).
+/// This matches the rest of wide-log's process-global state (the
+/// `SENDER` `OnceLock` is also never reset).
 ///
 /// Policy changes apply to **future** events only. Events that have
 /// already been submitted and are in the channel will be flushed
@@ -210,7 +208,7 @@ pub fn dropped_events() -> u64 {
 /// The policy must be set before any [`submit`] call to take
 /// effect — the writer is started lazily on the first `submit`.
 pub fn set_flush_policy(policy: FlushPolicy) {
-    // The plan requires: "second call is a silent no-op".
+    // Idempotency contract: a second call must be a silent no-op.
     // `OnceLock::set` returns Err on the second call, which we
     // discard. The first call wins.
     let _ = POLICY.set(policy);
@@ -352,11 +350,11 @@ fn writer_loop(rx: mpsc::Receiver<Job>) {
 
     // Default policy if none was set. Loaded fresh at loop start;
     // policy changes via `set_flush_policy` are NOT picked up
-    // mid-loop (the plan documents that policy changes apply to
-    // future events only — and "future" here means "after the
-    // current writer thread exits and a new one starts"). For
-    // practical use, call `set_flush_policy` before any
-    // `submit()` so the writer picks it up on startup.
+    // mid-loop (policy changes apply to future events only — and
+    // "future" here means "after the current writer thread exits
+    // and a new one starts"). For practical use, call
+    // `set_flush_policy` before any `submit()` so the writer picks
+    // it up on startup.
     let policy: FlushPolicy = current_flush_policy();
     let mut batch_started = Instant::now();
     let mut batch_bytes: usize = 0;
@@ -474,10 +472,10 @@ mod tests {
         v
     }
 
-    // ── Phase 4 §FlushPolicy ──
+    // ── FlushPolicy defaults ──
 
     #[test]
-    fn default_policy_matches_plan() {
+    fn default_policy_matches_documented_defaults() {
         let p = FlushPolicy::default();
         assert_eq!(p.max_interval, Duration::from_millis(100));
         assert_eq!(p.max_bytes, 8 * 1024);
@@ -494,7 +492,7 @@ mod tests {
 
     #[test]
     fn set_flush_policy_is_idempotent() {
-        // The plan requires: second call is a silent no-op. We
+        // The contract: a second call is a silent no-op. We
         // can verify this by reading the policy back and
         // confirming the first call wins.
         //
@@ -548,7 +546,7 @@ mod tests {
         );
     }
 
-    // ── §FlushPolicy: time-based flush ──
+    // ── time-based flush ──
 
     /// Stress the time-based flush path: submit many lines quickly,
     /// then verify all of them were flushed (via a `flush()` call).
@@ -571,7 +569,7 @@ mod tests {
         flush();
     }
 
-    // ── §FlushPolicy: line-count-based flush ──
+    // ── line-count-based flush ──
 
     /// Set a policy with `max_lines = 5` and verify that the
     /// line-count threshold triggers a flush.
@@ -595,7 +593,7 @@ mod tests {
         flush();
     }
 
-    // ── §FlushPolicy: bytes-based flush ──
+    // ── bytes-based flush ──
 
     #[test]
     fn bytes_batched_up_to_max_bytes_before_flush() {
@@ -608,7 +606,7 @@ mod tests {
         flush();
     }
 
-    // ── §FlushPolicy: explicit flush forces drain ──
+    // ── explicit flush forces drain ──
 
     #[test]
     fn explicit_flush_forces_drain() {
@@ -621,7 +619,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
-    // ── §FlushPolicy: writer exits gracefully on Sender drop ──
+    // ── writer exits gracefully on Sender drop ──
 
     /// The writer thread should exit when the channel is closed
     /// (i.e., when the only `Sender` is dropped). We can't easily
@@ -645,7 +643,7 @@ mod tests {
         // via process teardown.
     }
 
-    // ── §FlushPolicy: per_line preserves current behavior ──
+    // ── per_line flushes every line ──
 
     #[test]
     fn per_line_mode_flushes_every_line() {
@@ -676,11 +674,11 @@ mod tests {
         }
     }
 
-    // ── §FlushPolicy: policy change applies to future events only ──
+    // ── policy change applies to future events only ──
 
     #[test]
     fn policy_change_applies_to_future_events_only() {
-        // The plan says policy changes apply to future events.
+        // Policy changes apply to future events.
         // Since `set_flush_policy` is idempotent (a no-op on
         // repeat), we can only test the "first call wins"
         // behavior. The "future events" aspect is implemented
@@ -708,7 +706,7 @@ mod tests {
         }
     }
 
-    // ── §FlushPolicy: writer thread startup and shutdown ──
+    // ── writer thread startup and shutdown ──
 
     /// Smoke test: the writer thread is started lazily on the
     /// first `submit()` call and runs until the process exits.
@@ -723,7 +721,7 @@ mod tests {
         flush();
     }
 
-    // ── Phase 2 tests (preserved) ──
+    // ── byte pipeline tests ──
 
     #[test]
     fn dropped_events_starts_at_zero() {
@@ -774,7 +772,7 @@ mod tests {
         let _ = before;
     }
 
-    // ── Phase 5: bounded channel with backpressure ──
+    // ── bounded channel with backpressure ──
 
     #[test]
     fn channel_capacity_default_is_unbounded() {

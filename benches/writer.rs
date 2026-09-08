@@ -1,4 +1,4 @@
-//! Phase 4 writer throughput benchmarks.
+//! Writer throughput benchmarks.
 //!
 //! These benchmarks measure the throughput of the writer thread
 //! under different `FlushPolicy` settings. They use `/dev/null` as
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 // Re-implement the writer's batching logic locally so we can
 // benchmark it against a `/dev/null` sink without depending on
 // the global stdout-emit state. This mirrors the production
-// writer_loop's flush policy logic (Phase 4 §FlushPolicy).
+// writer_loop's flush policy logic.
 struct BenchWriter {
     /// Per-event line size (bytes including '\n').
     line_size: usize,
@@ -86,7 +86,7 @@ fn bench_throughput(c: &mut Criterion) {
     let n_lines = 100_000;
 
     for line_size in [32usize, 256, 1024] {
-        // Per-line flush (Phase 2 behavior, pre-Phase-4).
+        // Per-line flush (maximum durability).
         let writer = BenchWriter {
             line_size,
             max_lines: 1,
@@ -104,7 +104,7 @@ fn bench_throughput(c: &mut Criterion) {
             },
         );
 
-        // Default batched flush (Phase 4 default).
+        // Default batched flush.
         let writer = BenchWriter {
             line_size,
             max_lines: 1000,

@@ -52,7 +52,7 @@ fn parse(slot: &CaptureSlot) -> sonic_rs::Value {
     sonic_rs::from_str(&json).unwrap()
 }
 
-// ---- §5.1: All log-level macros work ----
+// ---- All log-level macros work ----
 
 #[test]
 fn all_log_level_macros_literal() {
@@ -134,7 +134,7 @@ fn log_entries_accumulate_in_order() {
     assert_eq!(log[6]["message"], "seventh");
 }
 
-// ---- §5.2: wl_set! with all value types ----
+// ---- wl_set! with all value types ----
 
 #[test]
 fn wl_set_all_value_types() {
@@ -202,7 +202,7 @@ fn wl_set_with_unit_sets_null() {
     assert!(parsed["status"].is_null());
 }
 
-// ---- §5.3: wl_inc! / wl_dec! / wl_add! ----
+// ---- wl_inc! / wl_dec! / wl_add! ----
 
 #[test]
 fn wl_inc_initializes_to_one() {
@@ -313,7 +313,7 @@ fn wl_add_to_non_numeric_overwrites() {
     assert_eq!(parsed["status"], 5);
 }
 
-// ---- §5.4: wl_null! ----
+// ---- wl_null! ----
 
 #[test]
 fn wl_null_sets_null() {
@@ -376,7 +376,7 @@ fn all_macros_noop_without_guard() {
     assert!(current().is_none());
 }
 
-// ---- §5.5: info! shadowing tracing::info! ----
+// ---- info! shadowing tracing::info! ----
 //
 // These tests pin the feature-off macro surface: the generated
 // level macros exist and shadow `tracing`'s when both are in
@@ -459,7 +459,7 @@ fn all_log_macros_shadow_tracing() {
     assert_eq!(log[4]["message"], "t");
 }
 
-// ---- Phase 1 §1.3: mem::forget hazard on WideLogGuard ----
+// ---- mem::forget hazard on WideLogGuard ----
 
 #[test]
 fn wide_log_guard_forget_does_not_emit() {
@@ -468,9 +468,10 @@ fn wide_log_guard_forget_does_not_emit() {
     // a property of the user code (which should drop the guard or
     // use `let _ = guard;` patterns), not of the guard itself.
     //
-    // Phase 2 of the implementation plan will eliminate the raw-pointer
-    // pattern and make this case fully sound (no dangling pointer to
-    // restore). For now, the test just pins the current behavior.
+    // `mem::forget` also keeps `CURRENT_EVENT` pointing at the
+    // forgotten guard's event; the rustdoc on the generated guard
+    // documents that as an explicit unsoundness, so this test only
+    // pins the emit-not-called behavior.
 
     let counter = Arc::new(Mutex::new(0u32));
     let c = counter.clone();
@@ -525,7 +526,7 @@ fn wide_log_guard_drop_restores_thread_local() {
     assert_eq!(inner_parsed["status"], "inner");
 }
 
-// ---- Phase 2 §1.3: Send / Sync soundness ----
+// ---- Send / Sync soundness ----
 
 #[test]
 fn value_k_is_send_sync() {
@@ -601,7 +602,7 @@ fn wide_log_guard_can_be_sent_across_threads() {
     });
 }
 
-// ---- Phase 2 §1.2: Vec<u8> pipeline produces valid JSON line ----
+// ---- Vec<u8> pipeline produces valid JSON line ----
 
 #[test]
 fn default_emit_produces_valid_json_line() {
@@ -625,19 +626,18 @@ fn default_emit_produces_valid_json_line() {
     assert!(parsed["event"]["id"].is_str());
 }
 
-// ---- Phase 2 §2.3: producer EMIT_BUF does not grow unboundedly ----
+// ---- producer EMIT_BUF does not grow unboundedly ----
 
 #[test]
 fn emit_buf_capacity_is_bounded_across_many_events() {
-    // After Phase 2, the producer's `EMIT_BUF` thread-local `Vec<u8>` is
+    // The producer's `EMIT_BUF` thread-local `Vec<u8>` is
     // cleared and reused across events, not freed. We can't observe the
     // buffer directly (it's a private thread_local in the macro), but
     // we can verify the end-to-end path runs many events without
     // unbounded memory growth by simply emitting thousands of events
     // and checking the test process doesn't OOM.
     //
-    // The real two-buffer ping-pong return-slot optimization is
-    // deferred to 0.7.0; in 0.6.0 the producer reuses its `EMIT_BUF`
+    // The producer reuses its `EMIT_BUF`
     // and the writer drops each `Vec<u8>` it receives. This test pins
     // the producer-side boundedness for future regressions.
     for _ in 0..10_000 {
@@ -672,7 +672,7 @@ fn emit_buf_handles_increasing_event_sizes() {
     }
 }
 
-// ---- Phase 3 §3.4: with_id_str overload ----
+// ---- with_id_str overload ----
 
 #[test]
 fn with_id_str_overrides_event_id() {
