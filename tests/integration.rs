@@ -11,6 +11,14 @@ wide_log!({
 
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
+mod common;
+
+#[allow(unused_imports)]
+use common::capture_subscriber;
+#[allow(unused_imports)]
+#[cfg(feature = "tracing")]
+use common::{error, info, warn};
+
 type CaptureSlot = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 
 #[allow(clippy::type_complexity)]
@@ -63,6 +71,7 @@ fn guard_emits_with_defaults_and_duration() {
 #[test]
 fn log_macros_accumulate() {
     let (captured, emit) = capture();
+    let _sub = capture_subscriber();
     let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("request received");
@@ -85,6 +94,7 @@ fn log_macros_accumulate() {
 #[test]
 fn log_macros_with_format_args() {
     let (captured, emit) = capture();
+    let _sub = capture_subscriber();
     let _guard = WideLogGuard::builder().with_emit(emit).build();
 
     info!("request {}", 42);
@@ -157,6 +167,7 @@ fn wl_null_works() {
 
 #[test]
 fn macros_are_noop_without_guard() {
+    let _sub = capture_subscriber();
     wl_set!("service.name", "noop");
     wl_inc!("requests");
     info!("nothing happens");
@@ -310,6 +321,7 @@ fn nested_sync_scopes_innermost_accessible() {
     let outer_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let inner_captured = std::sync::Arc::new(std::sync::Mutex::new(None));
 
+    let _sub = capture_subscriber();
     let oc = outer_captured.clone();
     let _outer = WideLogGuard::builder()
         .with_emit(move |ev| {

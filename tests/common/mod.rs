@@ -3,12 +3,47 @@
 //! Each `wide_log!` invocation exports the same set of `#[macro_export]`
 //! macros (`wl_set!`, `info!`, etc.), so multiple invocations cannot live
 //! in the same test crate. The per-unit tests each live in their own test
-//! file and import these helpers via `mod common;`.
+//! file and import these helpers via `mod common;`. Not every test file
+//! uses every helper, so unused items are tolerated here.
+#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 
 use sonic_rs::JsonValueTrait;
 use wide_log::Key;
+
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+pub use wide_log::{debug, error, info, trace, warn};
+
+// The capture layer is generated at the `wide_log!` invocation site —
+// the crate root of each test crate that includes this module — so it
+// resolves as `crate::WideLogCaptureLayer` from here.
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+pub use crate::WideLogCaptureLayer;
+
+/// Installs a thread-local default subscriber with the capture layer
+/// for tests that assert on the `log` array while the `tracing`
+/// feature is on: unqualified log calls resolve to the re-exported
+/// `tracing` macros and are captured into the active wide event by
+/// this layer. Returns `Some(guard)` under the feature (the guard
+/// keeps the subscriber installed for the enclosing scope) and
+/// `None` without it (the generated level macros append to the
+/// active event directly, so no subscriber is needed).
+pub fn capture_subscriber() -> Option<tracing::subscriber::DefaultGuard> {
+    #[cfg(feature = "tracing")]
+    {
+        use tracing_subscriber::prelude::*;
+        Some(tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::WideLogCaptureLayer::new()),
+        ))
+    }
+    #[cfg(not(feature = "tracing"))]
+    {
+        None
+    }
+}
 
 pub type CaptureSlot = Arc<Mutex<Option<String>>>;
 

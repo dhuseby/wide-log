@@ -5,6 +5,36 @@ use axum::routing::get;
 use tokio::sync::Notify;
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record (application and dependency crates)
+    // into the active wide event, and no formatting layer is
+    // installed, so the subscriber itself prints nothing.
+    tracing_subscriber::registry()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
+#[cfg(feature = "tracing")]
+fn raw_json_emit(ev: &wide_log::WideEvent<EventKey>) {
+    // Raw JSON output: print the serialized event as one bare JSON
+    // line with no timestamp or level prefix. The subscriber stack is
+    // capture-only (no formatting layer), so this emit is the only
+    // thing that writes to stdout.
+    if let Ok(json) = ev.to_json() {
+        println!("{json}");
+    }
+}
+
 wide_log!({
     "service": {
         "name": null,
@@ -40,8 +70,10 @@ async fn ok() -> &'static str {
     DONE.get().unwrap().notify_one();
 
     // Handler returns → WideLogLayer drops the guard → sets
-    // duration.total_ms, serializes to JSON, writes to non-blocking stdout
-    // via `default_emit`.
+    // duration.total_ms, serializes to JSON, and emits. Under the
+    // `tracing` feature the emit is the raw-JSON closure (bare JSON
+    // line); without the feature, `default_emit` writes the bare JSON
+    // line to the non-blocking stdout writer.
     ""
 }
 
@@ -57,9 +89,20 @@ async fn fetch_upstream() {
 
 #[tokio::main]
 async fn main() {
+    init_capture();
     let done = Notify::new();
     DONE.set(done).unwrap();
 
+    // Under the `tracing` feature the middleware's `default_emit`
+    // would route the finished event through the (silent) subscriber;
+    // wrap the handler in `scope(raw_json_emit, ...)` instead so the
+    // guard drop prints the bare JSON line. Without the feature,
+    // `WideLogLayer` + `default_emit` write the bare JSON line.
+    #[cfg(feature = "tracing")]
+    let app = Router::new()
+        .route("/ok", get(|| scope(raw_json_emit, ok())))
+        .layer(WideLogLayer::new());
+    #[cfg(not(feature = "tracing"))]
     let app = Router::new()
         .route("/ok", get(ok))
         .layer(WideLogLayer::new());

@@ -119,7 +119,7 @@ impl<K: Key> WideEvent<K> {
     pub fn add_path<V: Into<Value<K>>>(&mut self, path: &[K], value: V) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
         let value = value.into();
-        // Phase 5 §5.3: inline the common 2-segment case. This
+        // Inline the common 2-segment case. This
         // avoids a loop + bounds check for the most common
         // pattern (e.g. "duration.total_ms", "event.id",
         // "service.name"). For longer paths we fall back to the
@@ -221,7 +221,7 @@ impl<K: Key> WideEvent<K> {
     #[inline]
     pub fn inc_path(&mut self, path: &[K]) {
         debug_assert!(!path.is_empty(), "path must have at least one segment");
-        // Phase 5 §5.3: inline the 1- and 2-segment cases.
+        // Inline the 1- and 2-segment cases.
         if path.len() == 2 {
             let target = self.object(path[0]);
             target.inc(path[1]);

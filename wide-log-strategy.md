@@ -77,10 +77,22 @@ accumulated log entries:
 ### Log Entries
 
 The `log` key is handled entirely internally by the crate. The user never
-declares `"log"` in the `wide_log!` JSON. Log entries are accumulated via the
-`info!`, `warn!`, `error!`, `debug!`, and `trace!` macros (which shadow the
-`tracing` macros of the same names when `wide_log` is in scope). Each entry is
-serialized as:
+declares `"log"` in the `wide_log!` JSON. How log entries accumulate depends
+on the `tracing` feature:
+
+- **Feature off (default)** — the generated `info!`, `warn!`, `error!`,
+  `debug!`, and `trace!` macros append entries directly (these shadow the
+  `tracing` macros of the same names when `wide_log` is in scope).
+- **Feature on** — application and dependency code log through the
+  canonical `tracing` macros; the generated `WideLogCaptureLayer` capture
+  layer appends a `{level, message}` entry for every record emitted while a
+  guard is active. The recommended subscriber stack is capture-only
+  (no formatting layer, so the subscriber prints nothing) plus a
+  custom `with_emit` closure that prints the serialized event, so the
+  emitted stdout line is one bare JSON object with no timestamp or
+  level prefix — identical to the feature-off output shape.
+
+Each entry is serialized as:
 
 ```
 { "level": "info", "message": "request received" }
@@ -226,11 +238,11 @@ The `wide_log!` JSON supports the following value markers:
 | `wl_dec!(path)` | Decrement a numeric field by 1 at a nested path (init to -1 if absent) |
 | `wl_add!(path, n)` | Add a number to a numeric field at a nested path |
 | `wl_null!(path)` | Set a field to null at a nested path |
-| `info!(msg)` / `info!(fmt, ...)` | Append info-level log entry (shadows `tracing::info!`) |
-| `warn!(msg)` / `warn!(fmt, ...)` | Append warn-level log entry (shadows `tracing::warn!`) |
-| `error!(msg)` / `error!(fmt, ...)` | Append error-level log entry (shadows `tracing::error!`) |
-| `debug!(msg)` / `debug!(fmt, ...)` | Append debug-level log entry (shadows `tracing::debug!`) |
-| `trace!(msg)` / `trace!(fmt, ...)` | Append trace-level log entry (shadows `tracing::trace!`) |
+| `info!(msg)` / `info!(fmt, ...)` | Append info-level log entry (compiled only when the `tracing` feature is off; with the feature on, the crate re-exports `tracing`'s macros and records are captured by `WideLogCaptureLayer`) |
+| `warn!(msg)` / `warn!(fmt, ...)` | Append warn-level log entry (feature-off only, as above) |
+| `error!(msg)` / `error!(fmt, ...)` | Append error-level log entry (feature-off only, as above) |
+| `debug!(msg)` / `debug!(fmt, ...)` | Append debug-level log entry (feature-off only, as above) |
+| `trace!(msg)` / `trace!(fmt, ...)` | Append trace-level log entry (feature-off only, as above) |
 
 All macros are no-ops when no guard is active (`current()` returns `None`).
 

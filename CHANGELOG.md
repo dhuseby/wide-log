@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-08
+
+### Changed
+- **The `tracing` feature now also adds capture.** Canonical `tracing`
+  records — from the application or any dependency crate — are appended
+  to the active wide event's `log` array as `{level, message}` entries
+  while a wide-log guard is active. Install the new
+  `WideLogCaptureLayer` in the subscriber stack:
+  `tracing_subscriber::registry().with(...).with(WideLogCaptureLayer).init()`.
+  Records are still forwarded to all other layers (the layer never
+  suppresses anything). A record with no message field renders its other
+  fields as `name=value` text; a record with both appends the fields
+  after the message; a record with neither is skipped. The level floor
+  defaults to capturing every level; set a floor with
+  `WideLogCaptureLayer::new().with_max_level(level)`.
+- The wide-log `info!`/`warn!`/`error!`/`debug!`/`trace!` macros compile
+  only when the `tracing` feature is **off** (the default; behavior in
+  that mode is unchanged). When the feature is on, the crate re-exports
+  `tracing`'s level macros instead, so unqualified `info!` call sites
+  resolve to canonical tracing without edits. Existing users of
+  `--features tracing` must add `WideLogCaptureLayer` to their
+  subscriber stack — without it, tracing records reach other layers but
+  never enter the wide event.
+- The macro-generated `default_emit` in tracing mode now tags its
+  `::tracing::info!` record with the reserved `wide_log` target; the
+  capture layer skips that target so a finished event is not re-captured
+  into itself.
+- The one-time `eprintln!` transition-aid warning that the `tracing`
+  feature printed on first use was removed.
+
+### Added
+- The macro-generated `WideLogCaptureLayer`, a `tracing-subscriber`
+  layer that appends canonical `tracing` records (application and
+  dependency crates) to the active wide event's `log` array, with a
+  `.with_max_level(tracing::Level)` capture floor.
+- The `tracing` feature now enables optional dependencies on the
+  `tracing` and `tracing-subscriber` crates (previously the feature
+  added no dependencies and required the symbols to come from the user
+  crate). Without the feature the dependency graph is unchanged.
+- `examples/capture.rs`, demonstrating end-to-end capture from both
+  application code and a dependency-like module
+  (`cargo run --example capture --features tracing`).
+
 ## [0.6.6] - 2026-08-18
 
 ### Added

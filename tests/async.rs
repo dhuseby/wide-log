@@ -12,6 +12,13 @@ wide_log!({
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 use std::sync::{Arc, Mutex};
 
+mod common;
+
+#[allow(unused_imports)]
+use common::capture_subscriber;
+#[cfg(feature = "tracing")]
+use common::info;
+
 type CaptureSlot = Arc<Mutex<Option<String>>>;
 
 #[allow(clippy::type_complexity)]
@@ -30,6 +37,7 @@ fn capture() -> (
 #[tokio::test]
 async fn scope_default_works() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     let result = scope(emit, async {
         wl_set!("service.name", "async-svc");
         wl_inc!("requests");
@@ -65,6 +73,7 @@ async fn scope_default_uses_default_emit() {
 #[tokio::test]
 async fn macros_work_across_await() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     scope(emit, async {
         wl_set!("status", "pending");
         info!("before await");
@@ -91,6 +100,7 @@ async fn nested_async_scopes() {
     let outer_slot = Arc::new(Mutex::new(None));
     let inner_slot = Arc::new(Mutex::new(None));
 
+    let _sub = capture_subscriber();
     let oc = outer_slot.clone();
     let ic = inner_slot.clone();
 
@@ -157,6 +167,7 @@ async fn concurrent_tasks_have_separate_events() {
     let slots: Vec<Arc<Mutex<Option<String>>>> =
         (0..5).map(|_| Arc::new(Mutex::new(None))).collect();
 
+    let _sub = capture_subscriber();
     let mut handles = vec![];
     for (i, slot) in slots.iter().enumerate() {
         let s = slot.clone();
@@ -190,7 +201,7 @@ async fn concurrent_tasks_have_separate_events() {
     }
 }
 
-// ---- WideLogLayer middleware test (§4.2 / Phase 7) ----
+// ---- WideLogLayer middleware test ----
 
 use std::convert::Infallible;
 use wide_log::__re_exports::tower::{Layer, Service};
@@ -300,6 +311,7 @@ async fn middleware_with_preset_applies_to_request() {
     // Test via scope_with_defaults with a custom emit to verify the middleware
     // path works. This is the functional equivalent of what the middleware does.
     let (slot2, emit2) = capture();
+    let _sub = capture_subscriber();
     scope_with_defaults(
         emit2,
         |ev| {
@@ -319,7 +331,7 @@ async fn middleware_with_preset_applies_to_request() {
     assert_eq!(parsed["status"], "running");
 }
 
-// ---- Phase 1: scope cancellation ----
+// ---- scope cancellation ----
 
 #[tokio::test]
 async fn scope_emits_on_cancellation() {
@@ -365,7 +377,7 @@ async fn scope_emits_on_cancellation() {
     assert!(parsed["event"]["id"].is_str());
 }
 
-// ---- Phase 6: concurrency stress test ----
+// ---- concurrency stress test ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_thousand_concurrent_scopes() {
@@ -470,6 +482,7 @@ async fn scope_with_defaults_applies_preset_before_handler() {
 #[tokio::test]
 async fn scope_with_defaults_presets_without_handler_override() {
     let (slot, emit) = capture();
+    let _sub = capture_subscriber();
     scope_with_defaults(
         emit,
         |ev| {

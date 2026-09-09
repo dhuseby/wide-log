@@ -2,6 +2,25 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use std::hint::black_box;
 use wide_log::wide_log;
 
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    // Leaked on purpose: the subscriber must outlive every bench
+    // iteration, and the bench harness runs each function once per
+    // process.
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(crate::WideLogCaptureLayer::new()),
+    );
+    std::mem::forget(guard);
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
 // Generate the wide-log schema once at module level. This produces:
 //   EventKey enum, Key impl, thread_local CURRENT_EVENT, WideLogGuard,
 //   current(), all wl_* and log-level macros.
@@ -205,6 +224,7 @@ fn bench_wl_inc_dec(c: &mut Criterion) {
 
 /// Benchmark: info! / warn! / etc. log entry accumulation.
 fn bench_log_macros(c: &mut Criterion) {
+    init_capture();
     let mut group = c.benchmark_group("log_macros");
 
     // Literal message (no formatting):
@@ -322,6 +342,7 @@ fn bench_to_json(c: &mut Criterion) {
 /// counter increments, log messages, drop + serialize.
 /// This is the end-to-end benchmark that represents typical usage.
 fn bench_full_lifecycle(c: &mut Criterion) {
+    init_capture();
     let mut group = c.benchmark_group("full_lifecycle");
 
     // No-op emit (accumulation only, no serialization):

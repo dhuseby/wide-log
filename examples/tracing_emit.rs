@@ -1,23 +1,42 @@
-//! Scenario 4 from `wltest`: a custom emit function that routes the
-//! serialized wide event through `::tracing::info!`.
+//! A custom emit function that routes the serialized wide event
+//! through `::tracing::info!` when the `tracing` feature is off —
+//! and demonstrates the raw-JSON pattern when the feature is on.
 //!
-//! Unlike [`basic`](./basic.rs) (which uses the generated `default_emit`
-//! that writes a bare JSON line to stdout), this example installs a custom
-//! emit via `with_emit`. The emit serializes the event to JSON and hands it
-//! to `::tracing::info!(event = %json)`, so the emitted line on stdout is
+//! With the feature **off**, this example installs a custom emit via
+//! `with_emit`. The emit serializes the event to JSON and hands it to
+//! `::tracing::info!(event = %json)`, so the emitted line on stdout is
 //! wrapped in the tracing fmt envelope:
 //!
 //! ```text
 //! 2026-07-17T16:01:26Z INFO tracing_emit: event={"service":{"name":"tracing-example",...},"log":[...]}
 //! ```
 //!
-//! Notice the `event=` field marker and the `INFO` envelope prefix — the
-//! JSON itself is not re-escaped (it is emitted via `%` Display formatting),
-//! but it is no longer a bare top-level JSON object on the line. Compare
-//! this with `basic.rs`, whose `default_emit` output starts directly with
-//! `{"service":...`.
+//! With the feature **on**, the same subscriber-stack shape applies
+//! (capture-only, nothing printed), but the emit is a plain
+//! `println!("{json}")`: the finished event is printed as one bare
+//! JSON line with no timestamp or level prefix, and every canonical
+//! `tracing` record is captured into the wide event instead.
 
 use wide_log::wide_log;
+
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record (application and dependency crates)
+    // into the active wide event, and no formatting layer is
+    // installed, so the subscriber itself prints nothing.
+    tracing_subscriber::registry()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
 
 wide_log!({
     "service": {
@@ -28,10 +47,19 @@ wide_log!({
 });
 
 fn main() {
-    // Install a tracing fmt subscriber so the `::tracing::info!` call below
-    // produces an envelope-prefixed line on stdout.
-    tracing_subscriber::fmt().init();
+    init_capture();
 
+    #[cfg(feature = "tracing")]
+    let _guard = WideLogGuard::builder()
+        .with_emit(|ev| {
+            if let Ok(json) = ev.to_json() {
+                // Raw JSON output: one bare JSON line, no envelope.
+                println!("{json}");
+            }
+        })
+        .build();
+
+    #[cfg(not(feature = "tracing"))]
     let _guard = WideLogGuard::builder()
         .with_emit(|ev| {
             if let Ok(json) = ev.to_json() {
@@ -48,9 +76,7 @@ fn main() {
     info!("request received");
     info!("request completed");
 
-    // _guard drops → event serialized to JSON and emitted via the custom
-    // emit as `::tracing::info!(event = %json)`. The line on stdout is
-    // wrapped in the tracing fmt envelope and the JSON is the value of the
-    // `event=` field — not a bare top-level JSON object.
+    // _guard drops → the emit closure runs: bare JSON under the
+    // feature, fmt-enveloped `event=` record without it.
     drop(_guard);
 }

@@ -144,7 +144,10 @@ fn run_bounded_example() -> (String, i32) {
 #[test]
 fn bounded_emit_writes_bare_json_to_stdout() {
     let (stdout, code) = run_bounded_example();
-    assert_eq!(code, 0, "bounded example exited non-zero; stdout:\n{stdout}");
+    assert_eq!(
+        code, 0,
+        "bounded example exited non-zero; stdout:\n{stdout}"
+    );
 
     let parsed = first_json_line(&stdout);
     assert!(

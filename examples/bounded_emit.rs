@@ -23,8 +23,38 @@
 //! cargo run --example bounded_emit
 //! ```
 
-use wide_log::stdout_emit::{set_channel_capacity, ChannelCapacity};
+use wide_log::stdout_emit::{ChannelCapacity, set_channel_capacity};
 use wide_log::wide_log;
+
+#[cfg(feature = "tracing")]
+#[allow(unused_imports)]
+use wide_log::{debug, error, info, trace, warn};
+
+#[cfg(feature = "tracing")]
+fn init_capture() {
+    use tracing_subscriber::prelude::*;
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record (application and dependency crates)
+    // into the active wide event, and no formatting layer is
+    // installed, so the subscriber itself prints nothing.
+    tracing_subscriber::registry()
+        .with(crate::WideLogCaptureLayer::new())
+        .init();
+}
+
+#[cfg(not(feature = "tracing"))]
+fn init_capture() {}
+
+#[cfg(feature = "tracing")]
+fn raw_json_emit(ev: &wide_log::WideEvent<EventKey>) {
+    // Raw JSON output: print the serialized event as one bare JSON
+    // line with no timestamp or level prefix. The subscriber stack is
+    // capture-only (no formatting layer), so this emit is the only
+    // thing that writes to stdout.
+    if let Ok(json) = ev.to_json() {
+        println!("{json}");
+    }
+}
 
 wide_log!({
     "service": {
@@ -35,12 +65,19 @@ wide_log!({
 });
 
 fn main() {
+    init_capture();
     // Configure the writer's channel as a bounded `sync_channel(8)` before
     // the first `submit`. Idempotent: the first call wins; subsequent calls
     // are silent no-ops. Must be called before the writer is started (which
     // happens lazily on the first `submit`).
     set_channel_capacity(ChannelCapacity::Bounded(8));
 
+    // Under the `tracing` feature, emit through the raw-JSON closure
+    // (the capture-only subscriber prints nothing); without the
+    // feature, `default_emit` writes the bare JSON line itself.
+    #[cfg(feature = "tracing")]
+    let _guard = WideLogGuard::builder().with_emit(raw_json_emit).build();
+    #[cfg(not(feature = "tracing"))]
     let _guard = WideLogGuard::builder().build();
 
     wl_set!("service.name", "bounded-example");

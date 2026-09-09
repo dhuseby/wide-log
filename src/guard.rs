@@ -164,11 +164,11 @@ where
             let ts_idx = K::TIMESTAMP_PATH[0].as_index();
             self.event.ensure_capacity(dur_idx.max(ts_idx));
 
-            // Phase 3 §2.4: skip `new_child()` when the child slot is
-            // already a valid `Object`. Previously, the code created a
-            // new child whenever `values[idx]` was `None` or held a
-            // non-object, which would clobber an existing object the
-            // user had already populated. We now read the existing
+            // Skip `new_child()` when the child slot is
+            // already a valid `Object`. Creating a new child
+            // whenever `values[idx]` is `None` or holds a
+            // non-object would clobber an existing object the
+            // user had already populated. We read the existing
             // child if it is already an object and only allocate a new
             // one when the slot is empty or wrong-typed.
             let need_dur_child = match &self.event.values.get(dur_idx) {

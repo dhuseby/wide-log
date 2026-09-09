@@ -429,7 +429,7 @@ impl GenContext {
             ));
         }
 
-        // §4.4: detect user-declared default for `event.id` that will be
+        // Detect a user-declared default for `event.id` that will be
         // silently overwritten by the default ULID generator at build time.
         // We only warn/error if a default is present; if the user has set
         // a custom id_fn via `with_id` (or `with_uuid`) they get to keep
@@ -630,17 +630,26 @@ impl GenContext {
                 pub static EMIT_BUF: ::std::cell::RefCell<::std::vec::Vec<u8>> =
                     const { ::std::cell::RefCell::new(::std::vec::Vec::new()) };
 
-                // Phase 3 §3.1: reusable thread-local format buffer for
-                // `info!`, `warn!`, `error!`, `debug!`, `trace!` with
-                // format args. Cleared (not freed) between calls so the
-                // underlying `String` allocation is reused across all
-                // log calls on this thread. Saves the ~50–200 ns/call
-                // of allocating + freeing a fresh `String::with_capacity(64)`
-                // (Phase 0 baseline measurement).
+                // Reusable thread-local format buffer. With the
+                // `tracing` feature off it backs the format-arg
+                // variants of the `info!`-style macros; with the
+                // feature on it holds the rendered `message` field of
+                // captured tracing records. Cleared (not freed)
+                // between uses so the underlying `String` allocation
+                // is reused across all log calls on this thread.
                 pub static FMT_BUF: ::std::cell::RefCell<::std::string::String> =
                     const { ::std::cell::RefCell::new(::std::string::String::new()) };
 
-                // Phase 3 §3.2: reusable thread-local ULID buffer.
+                // Reusable thread-local field buffer for the capture
+                // layer. Non-`message` tracing fields render into this
+                // buffer as `name=value` text before being appended to
+                // the message. Cleared (not freed) between events so
+                // the underlying `String` allocation is reused across
+                // all captured records on this thread.
+                pub static FIELDS_BUF: ::std::cell::RefCell<::std::string::String> =
+                    const { ::std::cell::RefCell::new(::std::string::String::new()) };
+
+                // Reusable thread-local ULID buffer.
                 // The default id generator writes a 26-character
                 // ULID string into this buffer and `.clone()`s the
                 // result for the caller's owned `String`. The
@@ -656,25 +665,15 @@ impl GenContext {
             // The `tracing` feature is enabled on the macros crate:
             // route the serialized event through `::tracing::info!`
             // (which the user crate must have in scope via a
-            // tracing-subscriber init). A one-time `eprintln!` warning
-            // is emitted to remind the user that this is a
-            // transition aid, not the default. The actual JSON
-            // payload is the value of the `event=` field on a
-            // tracing info record; subscribers format the surrounding
-            // envelope (timestamp, level, target) themselves.
+            // tracing-subscriber init). The record is tagged with the
+            // reserved `wide_log` target; the capture layer skips
+            // that target so the finished event is not re-captured
+            // into itself. The actual JSON payload is the value of
+            // the `event=` field on a tracing info record;
+            // subscribers format the surrounding envelope
+            // (timestamp, level, target) themselves.
             quote! {
                 fn default_emit(ev: &::wide_log::WideEvent<EventKey>) {
-                    use ::std::sync::atomic::{AtomicBool, Ordering};
-                    static WARNED: AtomicBool = AtomicBool::new(false);
-                    if !WARNED.swap(true, Ordering::Relaxed) {
-                        ::std::eprintln!(
-                            "wide-log: emitting via `::tracing::info!` because the `tracing` \
-                             feature is enabled. This is a transition aid for migrating from \
-                             `tracing::info!` to `wide_log!`; new code should disable the \
-                             `tracing` feature and use the default (bare JSON to stdout) \
-                             or a custom `with_emit` closure."
-                        );
-                    }
                     EMIT_BUF.with(|buf| {
                         let mut buf = buf.borrow_mut();
                         buf.clear();
@@ -694,9 +693,11 @@ impl GenContext {
                                 // Use the fully-qualified path so the
                                 // call resolves to the user's
                                 // `tracing` crate, not a hypothetical
-                                // `wide_log!`-generated macro.
+                                // `wide_log!`-generated macro. The
+                                // reserved target lets the capture
+                                // layer skip this record.
                                 let s = s.trim_end_matches('\n');
-                                ::tracing::info!(event = %s);
+                                ::tracing::info!(target: "wide_log", event = %s);
                             }
                         }
                     });
@@ -714,7 +715,7 @@ impl GenContext {
                             // The serializer only writes valid UTF-8, so the
                             // bytes form a valid JSON line. We send the
                             // `Vec<u8>` directly to the writer thread
-                            // (Phase 2 §1.2: no `from_utf8_unchecked`, no
+                            // (no `from_utf8_unchecked`, no
                             // `Vec::split_off(0)` copy). The writer
                             // appends no trailing `'\n'` of its own —
                             // we do that here so the producer is
@@ -756,14 +757,13 @@ impl GenContext {
             > {
                 // The ScopedGuard is boxed to avoid parameterizing the
                 // macro-generated guard over `K: Key` (we know `K =
-                // EventKey` here). Phase 3 §3.3 was originally going
-                // to inline the fields, but `WideEvent`'s mutators
-                // are `pub(crate)` and the macro is expanded in user
-                // code (tests, examples) which doesn't have `crate`
-                // access. Leaving the `Box` indirection; a future
-                // release can add a `pub` constructor or move the
-                // `WideEvent` API surface needed by the macro into a
-                // public `__macro_internals` module.
+                // EventKey` here). Inlining the fields is not possible
+                // because `WideEvent`'s mutators are `pub(crate)` and
+                // the macro is expanded in user code (tests, examples)
+                // which doesn't have `crate` access. A future release
+                // can add a `pub` constructor or move the `WideEvent`
+                // API surface needed by the macro into a public
+                // `__macro_internals` module.
                 inner: ::std::boxed::Box<::wide_log::ScopedGuard<EventKey, F>>,
                 /// The previous value of `CURRENT_EVENT` for restoration
                 /// on drop.
@@ -790,9 +790,9 @@ impl GenContext {
         };
 
         let default_id_fn = quote! {
-            // Phase 3 §3.2: write the ULID into a thread-local
-            // reusable buffer and return a clone. The buffer's
-            // allocation is preserved across calls.
+            // Write the ULID into a thread-local reusable buffer and
+            // return a clone. The buffer's allocation is preserved
+            // across calls.
             ::std::boxed::Box::new(|| {
                 ULID_BUF.with(|buf| {
                     let mut buf = buf.borrow_mut();
@@ -846,13 +846,13 @@ impl GenContext {
                     self
                 }
 
-                // Phase 1.3 / issue #24: pre-set constant fields on the
+                // Pre-set constant fields on the
                 // builder so they are applied to every event created from
                 // this builder (or from `scope_with_defaults()` / a
                 // `WideLogLayer` configured with this preset) without a
                 // per-request `wl_set!` call. The closure is stored in an
                 // `Arc` so it can be cheaply cloned and shared across
-                // tasks/connections.
+                // tasks/connections. See issue #24.
                 //
                 // Accepts any `Fn + Send + Sync + 'static` closure (which
                 // is wrapped in an `Arc`) OR an existing `Arc<dyn Fn ...>`
@@ -881,7 +881,7 @@ impl GenContext {
                     self
                 }
 
-                // Phase 3 §3.4: a `&'static str` overload of
+                // A `&'static str` overload of
                 // `with_id` that avoids the closure + `Box<dyn FnOnce>`
                 // indirection for the common case of a fixed id.
                 // The user can still call the closure-based
@@ -996,16 +996,13 @@ impl GenContext {
                 /// recommended pattern if you need to temporarily
                 /// disarm a guard).
                 ///
-                /// [Phase 2] refactored the storage from a raw
-                /// `*mut WideEvent` field to a `Box<ScopedGuard>` +
-                /// raw `*const WideEvent` (for the previous-pointer
+                /// The storage is a `Box<ScopedGuard>` plus a raw
+                /// `*const WideEvent` (for the previous-pointer
                 /// value), so the auto-derived `Send + Sync` is
                 /// sound and the unsafe is concentrated in this
                 /// single function. The `mem::forget` soundness
-                /// hole is **unchanged** by Phase 2; it is a
-                /// pre-existing limitation of the guard pattern.
-                ///
-                /// [Phase 2]: https://github.com/dhuseby/wide-log/blob/main/CHANGELOG.md
+                /// hole is a pre-existing limitation of the guard
+                /// pattern.
                 fn drop(&mut self) {
                     // The ScopedGuard inside `inner` drops first (Rust
                     // drops fields in declaration order), which sets
@@ -1336,6 +1333,196 @@ impl GenContext {
             TokenStream2::new()
         };
 
+        let capture_code = if tracing {
+            quote! {
+                // Capture layer that appends canonical `tracing`
+                // records to the active wide event's `log` array.
+                // Tee semantics: the layer never suppresses other
+                // layers, so records still reach the rest of the
+                // subscriber stack.
+                pub struct WideLogCaptureLayer {
+                    max_level: ::std::option::Option<::tracing::Level>,
+                }
+
+                impl ::std::default::Default for WideLogCaptureLayer {
+                    fn default() -> Self {
+                        Self { max_level: ::std::option::Option::None }
+                    }
+                }
+
+                impl WideLogCaptureLayer {
+                    pub fn new() -> Self {
+                        Self::default()
+                    }
+
+                    // Raise the capture floor: records above this
+                    // level are skipped by capture (and only capture;
+                    // forwarding to other layers is unaffected).
+                    // `tracing::Level` orders ERROR as the highest
+                    // value, so a floor of `Level::INFO` captures
+                    // INFO, WARN, and ERROR records.
+                    #[must_use]
+                    pub fn with_max_level(mut self, level: ::tracing::Level) -> Self {
+                        self.max_level = ::std::option::Option::Some(level);
+                        self
+                    }
+                }
+
+                // The reserved target on the emit-side record. The
+                // `default_emit` function tags the finished JSON line
+                // with `target: "wide_log"`, and the capture layer
+                // skips that target so the completed event is not
+                // re-captured into itself.
+                const WIDE_LOG_TARGET: &str = "wide_log";
+
+                impl<S: ::tracing::Subscriber>
+                    ::tracing_subscriber::layer::Layer<S> for WideLogCaptureLayer
+                {
+                    fn enabled(
+                        &self,
+                        _metadata: &::tracing::Metadata<'_>,
+                        _cx: ::tracing_subscriber::layer::Context<'_, S>,
+                    ) -> bool {
+                        // Always true: capture never filters on behalf
+                        // of other layers; its own filtering happens in
+                        // `on_event`.
+                        true
+                    }
+
+                    fn on_event(
+                        &self,
+                        event: &::tracing::Event<'_>,
+                        _cx: ::tracing_subscriber::layer::Context<'_, S>,
+                    ) {
+                        let metadata = event.metadata();
+                        if metadata.target() == WIDE_LOG_TARGET {
+                            return;
+                        }
+                        if let ::std::option::Option::Some(floor) = self.max_level
+                            && metadata.level() > &floor
+                        {
+                            return;
+                        }
+                        let level_str: &'static str = match *metadata.level() {
+                            ::tracing::Level::TRACE => "trace",
+                            ::tracing::Level::DEBUG => "debug",
+                            ::tracing::Level::INFO => "info",
+                            ::tracing::Level::WARN => "warn",
+                            ::tracing::Level::ERROR => "error",
+                            _ => return,
+                        };
+                        let Some(ev) = current() else {
+                            return;
+                        };
+
+                        // Render the message field into FMT_BUF and the
+                        // remaining fields into FIELDS_BUF as `k=v`
+                        // text, then append the combined message. Both
+                        // buffers are cleared (not freed) per event.
+                        // Rendering runs inside `LocalKey::with` because
+                        // the `RefMut` cannot escape the closure. A
+                        // `try_borrow_mut` failure means the buffer is
+                        // already in use on this thread (for example, a
+                        // tracing call from inside an emit closure);
+                        // capture is skipped silently — it is
+                        // best-effort by contract.
+                        struct Renderer<'a> {
+                            msg: &'a mut String,
+                            fields: &'a mut String,
+                            // True once a field named `message` was
+                            // seen. Distinguishes "no message field"
+                            // from "message field present but empty"
+                            // (an empty message is still captured).
+                            saw_message: &'a mut bool,
+                        }
+                        impl ::tracing::field::Visit for Renderer<'_> {
+                            fn record_str(&mut self, field: &::tracing::field::Field, value: &str) {
+                                if field.name() == "message" {
+                                    *self.saw_message = true;
+                                    self.msg.push_str(value);
+                                } else {
+                                    let _ = ::std::fmt::Write::write_fmt(
+                                        self.fields,
+                                        ::std::format_args!("{}={}", field.name(), value),
+                                    );
+                                    self.fields.push(' ');
+                                }
+                            }
+                            fn record_debug(
+                                &mut self,
+                                field: &::tracing::field::Field,
+                                value: &dyn ::std::fmt::Debug,
+                            ) {
+                                if field.name() == "message" {
+                                    *self.saw_message = true;
+                                    let _ = ::std::fmt::Write::write_fmt(
+                                        self.msg,
+                                        ::std::format_args!("{:?}", value),
+                                    );
+                                } else {
+                                    let _ = ::std::fmt::Write::write_fmt(
+                                        self.fields,
+                                        ::std::format_args!("{}={:?}", field.name(), value),
+                                    );
+                                    self.fields.push(' ');
+                                }
+                            }
+                        }
+                        let _ = FIELDS_BUF.with(|fields_cell| {
+                            let mut fields = match fields_cell.try_borrow_mut() {
+                                Ok(f) => f,
+                                Err(_) => return,
+                            };
+                            FMT_BUF.with(|msg_cell| {
+                                let mut msg = match msg_cell.try_borrow_mut() {
+                                    Ok(m) => m,
+                                    Err(_) => return,
+                                };
+                                msg.clear();
+                                fields.clear();
+                                let mut saw_message = false;
+                                let mut renderer = Renderer {
+                                    msg: &mut msg,
+                                    fields: &mut fields,
+                                    saw_message: &mut saw_message,
+                                };
+                                event.record(&mut renderer);
+                                // Read the flag through the live
+                                // `&mut` borrow, then end the borrow
+                                // before `fields` is re-borrowed
+                                // below (no explicit `drop`: the
+                                // struct owns references only).
+                                let message_seen = { *renderer.saw_message };
+                                let trimmed_fields = fields.trim_end();
+                                if !message_seen && trimmed_fields.is_empty() {
+                                    // No message field and no other
+                                    // fields: nothing to capture.
+                                    return;
+                                }
+                                match (msg.is_empty(), trimmed_fields.is_empty()) {
+                                    // message + fields → "<message> k=v k=v"
+                                    (false, false) => {
+                                        msg.push(' ');
+                                        msg.push_str(trimmed_fields);
+                                    }
+                                    // fields-only → "k=v k=v"
+                                    (true, false) => {
+                                        msg.push_str(trimmed_fields);
+                                    }
+                                    // message-only → keep as-is (empty
+                                    // message included)
+                                    _ => {}
+                                }
+                                ev.append_log_entry(level_str, &msg);
+                            });
+                        });
+                    }
+                }
+            }
+        } else {
+            TokenStream2::new()
+        };
+
         let macros = quote! {
             // NOTE: all references to the items emitted at the
             // `wide_log!` call site (`current`, `__wl_resolve_path`,
@@ -1393,107 +1580,119 @@ impl GenContext {
                     }
                 };
             }
+        };
 
-            // Phase 3 §3.1: the format-arg variants of the log macros
-            // now use a thread-local `FMT_BUF` (`String`) instead of
-            // allocating a fresh one per call. The buffer is cleared
-            // (not freed) before each format, so its capacity is
-            // preserved across calls.
+        // The five level macros are compiled only when the `tracing`
+        // feature is off. When the feature is on, the crate re-exports
+        // `tracing`'s level macros instead: canonical tracing records
+        // reach the active wide event through the capture layer, so
+        // unqualified `info!`/`warn!`/`error!`/`debug!`/`trace!` call
+        // sites keep working in both modes without edits.
+        let log_macros = if !tracing {
+            quote! {
+                // The format-arg variants use the thread-local
+                // `FMT_BUF` (`String`) instead of allocating a fresh
+                // one per call. The buffer is cleared (not freed)
+                // before each format, so its capacity is preserved
+                // across calls.
 
-            #[macro_export]
-            macro_rules! info {
-                ($msg:literal) => {
-                    if let Some(ev) = $crate::current() {
-                        ev.append_log_entry_static("info", $msg);
-                    }
-                };
-                ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = $crate::current() {
-                        $crate::FMT_BUF.with(|buf| {
-                            let mut buf = buf.borrow_mut();
-                            buf.clear();
-                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
-                            ev.append_log_entry("info", &buf);
-                        });
-                    }
-                };
+                #[macro_export]
+                macro_rules! info {
+                    ($msg:literal) => {
+                        if let Some(ev) = $crate::current() {
+                            ev.append_log_entry_static("info", $msg);
+                        }
+                    };
+                    ($fmt:literal, $($arg:tt)*) => {
+                        if let Some(ev) = $crate::current() {
+                            $crate::FMT_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.clear();
+                                let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                                ev.append_log_entry("info", &buf);
+                            });
+                        }
+                    };
+                }
+
+                #[macro_export]
+                macro_rules! warn {
+                    ($msg:literal) => {
+                        if let Some(ev) = $crate::current() {
+                            ev.append_log_entry_static("warn", $msg);
+                        }
+                    };
+                    ($fmt:literal, $($arg:tt)*) => {
+                        if let Some(ev) = $crate::current() {
+                            $crate::FMT_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.clear();
+                                let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                                ev.append_log_entry("warn", &buf);
+                            });
+                        }
+                    };
+                }
+
+                #[macro_export]
+                macro_rules! error {
+                    ($msg:literal) => {
+                        if let Some(ev) = $crate::current() {
+                            ev.append_log_entry_static("error", $msg);
+                        }
+                    };
+                    ($fmt:literal, $($arg:tt)*) => {
+                        if let Some(ev) = $crate::current() {
+                            $crate::FMT_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.clear();
+                                let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                                ev.append_log_entry("error", &buf);
+                            });
+                        }
+                    };
+                }
+
+                #[macro_export]
+                macro_rules! debug {
+                    ($msg:literal) => {
+                        if let Some(ev) = $crate::current() {
+                            ev.append_log_entry_static("debug", $msg);
+                        }
+                    };
+                    ($fmt:literal, $($arg:tt)*) => {
+                        if let Some(ev) = $crate::current() {
+                            $crate::FMT_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.clear();
+                                let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                                ev.append_log_entry("debug", &buf);
+                            });
+                        }
+                    };
+                }
+
+                #[macro_export]
+                macro_rules! trace {
+                    ($msg:literal) => {
+                        if let Some(ev) = $crate::current() {
+                            ev.append_log_entry_static("trace", $msg);
+                        }
+                    };
+                    ($fmt:literal, $($arg:tt)*) => {
+                        if let Some(ev) = $crate::current() {
+                            $crate::FMT_BUF.with(|buf| {
+                                let mut buf = buf.borrow_mut();
+                                buf.clear();
+                                let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
+                                ev.append_log_entry("trace", &buf);
+                            });
+                        }
+                    };
+                }
             }
-
-            #[macro_export]
-            macro_rules! warn {
-                ($msg:literal) => {
-                    if let Some(ev) = $crate::current() {
-                        ev.append_log_entry_static("warn", $msg);
-                    }
-                };
-                ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = $crate::current() {
-                        $crate::FMT_BUF.with(|buf| {
-                            let mut buf = buf.borrow_mut();
-                            buf.clear();
-                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
-                            ev.append_log_entry("warn", &buf);
-                        });
-                    }
-                };
-            }
-
-            #[macro_export]
-            macro_rules! error {
-                ($msg:literal) => {
-                    if let Some(ev) = $crate::current() {
-                        ev.append_log_entry_static("error", $msg);
-                    }
-                };
-                ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = $crate::current() {
-                        $crate::FMT_BUF.with(|buf| {
-                            let mut buf = buf.borrow_mut();
-                            buf.clear();
-                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
-                            ev.append_log_entry("error", &buf);
-                        });
-                    }
-                };
-            }
-
-            #[macro_export]
-            macro_rules! debug {
-                ($msg:literal) => {
-                    if let Some(ev) = $crate::current() {
-                        ev.append_log_entry_static("debug", $msg);
-                    }
-                };
-                ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = $crate::current() {
-                        $crate::FMT_BUF.with(|buf| {
-                            let mut buf = buf.borrow_mut();
-                            buf.clear();
-                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
-                            ev.append_log_entry("debug", &buf);
-                        });
-                    }
-                };
-            }
-
-            #[macro_export]
-            macro_rules! trace {
-                ($msg:literal) => {
-                    if let Some(ev) = $crate::current() {
-                        ev.append_log_entry_static("trace", $msg);
-                    }
-                };
-                ($fmt:literal, $($arg:tt)*) => {
-                    if let Some(ev) = $crate::current() {
-                        $crate::FMT_BUF.with(|buf| {
-                            let mut buf = buf.borrow_mut();
-                            buf.clear();
-                            let _ = ::std::fmt::Write::write_fmt(&mut *buf, ::std::format_args!($fmt, $($arg)*));
-                            ev.append_log_entry("trace", &buf);
-                        });
-                    }
-                };
-            }
+        } else {
+            TokenStream2::new()
         };
 
         quote! {
@@ -1510,7 +1709,9 @@ impl GenContext {
             #guard_drop
             #current_fn
             #tokio_code
+            #capture_code
             #macros
+            #log_macros
         }
     }
 }
