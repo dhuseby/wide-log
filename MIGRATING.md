@@ -38,10 +38,26 @@ depends on the feature set you use:
          .init();
      ```
 
-  2. Expect the emit-side JSON to flow through the subscriber as
-     `::tracing::info!(target: "wide_log", event = %json)`; the
+  2. Decide where the finished event goes. With the default emit,
+     the JSON flows through the subscriber as
+     `::tracing::info!(target: "wide_log", event = %json)` (the
      layer skips that reserved target, so no event re-captures
-     itself.
+     itself). The recommended pattern keeps the stack capture-only
+     (no formatting layer, so the subscriber prints nothing) and
+     emits the bare JSON line from the guard:
+
+     ```rust
+     let _guard = WideLogGuard::builder()
+         .with_emit(|ev| {
+             if let Ok(json) = ev.to_json() {
+                 println!("{json}");  // bare JSON, no envelope
+             }
+         })
+         .build();
+     ```
+
+     The stdout output is then identical in both feature modes:
+     one bare JSON line per event, no timestamp or level prefix.
 
 Records from any crate in your dependency tree (via canonical
 `tracing` macros) are captured into the active wide event in this
@@ -489,7 +505,7 @@ When porting an existing `tracing`-based service to `wide-log`:
 | `#[tracing::instrument]` | No equivalent — write the guard explicitly |
 | `span.record("k", v)` | `wl_set!("k", v)` |
 | `tracing::Span::current().record(...)` | `if let Some(ev) = current() { ev.add_path(&[EventKey::K], v); }` |
-| `tracing_subscriber::fmt::init()` | Feature off: no subscriber needed — `default_emit` writes bare JSON to stdout. Feature on: `registry().with(...).with(WideLogCaptureLayer).init()` |
+| `tracing_subscriber::fmt::init()` | Feature off: no subscriber needed — `default_emit` writes bare JSON to stdout. Feature on: `registry().with(WideLogCaptureLayer).init()` plus a custom `with_emit` that prints the raw JSON line (capture-only stack prints nothing) |
 | `tracing_subscriber::EnvFilter` | No equivalent — schema-first, no runtime filter |
 | `TraceLayer::new_for_http()` (axum) | `WideLogLayer` |
 | `tracing::field::display(v)` | `wl_set!("k", v)` (uses `From` for the value type) |

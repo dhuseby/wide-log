@@ -1,14 +1,7 @@
-//! Behavior #2 of the three emit modes in `wide-log`: the `tracing`
-//! *feature* routes the macro-generated `default_emit` through
-//! `::tracing::info!` automatically — *without* a user-supplied
-//! `with_emit` closure.
-//!
-//! Contrast with [`tracing_emit`](./tracing_emit.rs), which reaches the same
-//! stdout envelope *manually* by passing a `with_emit` closure that calls
-//! `::tracing::info!` itself, with the `tracing` feature **off**. Here the
-//! feature does the routing at macro expansion time: the generated
-//! `default_emit` serializes the event to JSON, converts to a `String`, and
-//! emits `::tracing::info!(event = %s)`.
+//! The macro-generated `default_emit` under the `tracing` feature:
+//! the finished event is serialized and emitted through
+//! `::tracing::info!(target: "wide_log", event = %s)` — without a
+//! user-supplied `with_emit` closure.
 //!
 //! Build with:
 //!
@@ -16,17 +9,18 @@
 //! cargo run --example tracing_default_emit --features tracing
 //! ```
 //!
-//! The emitted stdout line is wrapped in the
-//! tracing fmt envelope (timestamp, level, target), and the JSON is the
-//! value of the `event=` field rather than a bare top-level JSON object:
+//! The subscriber stack here is capture-only: `WideLogCaptureLayer`
+//! routes every canonical `tracing` record into the wide event, and
+//! no formatting layer is installed, so the subscriber prints
+//! nothing. The guard therefore emits through the raw-JSON closure:
+//! the stdout line is one bare JSON object with no timestamp or
+//! level prefix.
 //!
-//! ```text
-//! 2026-07-17T16:01:26Z INFO tracing_default_emit: event={"service":{"name":"tracing-default",...},"log":[...],"duration":{"total_ms":...},"event":{"timestamp":"...","id":"..."}}
-//! ```
-//!
-//! Because the writer is the user's tracing subscriber (not wide-log's
-//! stdout writer thread), there is **no** `stdout_emit::flush()` to call at
-//! the end of `main` for this mode.
+//! To instead see the emit-side record through a formatting layer
+//! (timestamp, level, `wide_log` target), add
+//! `tracing_subscriber::fmt::layer()` to the stack; the capture
+//! layer skips the reserved `wide_log` target either way, so the
+//! finished event never re-captures itself.
 
 use wide_log::wide_log;
 
@@ -37,8 +31,11 @@ use wide_log::{debug, error, info, trace, warn};
 #[cfg(feature = "tracing")]
 fn init_capture() {
     use tracing_subscriber::prelude::*;
-    tracing_subscriber::fmt()
-        .finish()
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record (application and dependency crates)
+    // into the active wide event, and no formatting layer is
+    // installed, so the subscriber itself prints nothing.
+    tracing_subscriber::registry()
         .with(crate::WideLogCaptureLayer::new())
         .init();
 }
@@ -54,15 +51,26 @@ wide_log!({
     "requests": counter!,
 });
 
+#[cfg(feature = "tracing")]
+fn raw_json_emit(ev: &wide_log::WideEvent<EventKey>) {
+    // Raw JSON output: one bare JSON line, no timestamp or level
+    // prefix. The capture-only subscriber prints nothing, so this
+    // emit is the only thing that writes to stdout.
+    if let Ok(json) = ev.to_json() {
+        println!("{json}");
+    }
+}
+
 fn main() {
     init_capture();
-    // Install a tracing fmt subscriber so the generated `default_emit`'s
-    // `::tracing::info!(event = %json)` produces an envelope-prefixed line
-    // on stdout. Without a subscriber, the tracing call is a no-op.
-    tracing_subscriber::fmt().init();
 
-    // No `with_emit` here: the `tracing` feature rewrites the generated
-    // `default_emit` to route through `::tracing::info!` for us.
+    // Under the `tracing` feature, emit through the raw-JSON closure
+    // so guard drop prints the bare JSON line (the `default_emit`
+    // routing goes to the silent capture-only subscriber). Without
+    // the feature, `default_emit` writes the bare JSON line itself.
+    #[cfg(feature = "tracing")]
+    let _guard = WideLogGuard::builder().with_emit(raw_json_emit).build();
+    #[cfg(not(feature = "tracing"))]
     let _guard = WideLogGuard::builder().build();
 
     wl_set!("service.name", "tracing-default");
@@ -70,10 +78,6 @@ fn main() {
     info!("request received");
     info!("request completed");
 
-    // _guard drops → event serialized and emitted via the generated
-    // `default_emit` as `::tracing::info!(event = %json)`. The line on
-    // stdout is the tracing fmt envelope with the JSON as the `event=`
-    // field value — not a bare top-level JSON object (compare with
-    // `basic.rs`).
+    // _guard drops → bare JSON line on stdout in both modes.
     drop(_guard);
 }

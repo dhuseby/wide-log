@@ -158,10 +158,12 @@
 //! The generated `default_emit` routes the serialized event through
 //! `::tracing::info!(target: "wide_log", event = %json)`; the capture
 //! layer skips records with that reserved target, so the finished
-//! event is not re-captured into itself. Without a subscriber,
-//! tracing calls are no-ops and wide events still emit through the
-//! subscriber's own output path — in this mode a subscriber is
-//! required to see output.
+//! event is not re-captured into itself. With the default emit in
+//! this mode a formatting layer is needed to see output. The
+//! recommended pattern is a capture-only stack (no formatting layer,
+//! so the subscriber prints nothing) plus a custom emit that prints
+//! the bare JSON line — the stdout output is then identical in both
+//! feature modes. See "Capturing tracing records" below.
 //!
 //! ## Features
 //!

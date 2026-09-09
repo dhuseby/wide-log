@@ -7,8 +7,11 @@ use wide_log::{debug, error, info, trace, warn};
 #[cfg(feature = "tracing")]
 fn init_capture() {
     use tracing_subscriber::prelude::*;
-    tracing_subscriber::fmt()
-        .finish()
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record (application and dependency crates)
+    // into the active wide event, and no formatting layer is
+    // installed, so the subscriber itself prints nothing.
+    tracing_subscriber::registry()
         .with(crate::WideLogCaptureLayer::new())
         .init();
 }

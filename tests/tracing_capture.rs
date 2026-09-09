@@ -384,3 +384,69 @@ fn empty_message_is_captured_as_an_empty_entry() {
     assert_eq!(log[0]["level"].as_str(), Some("info"));
     assert_eq!(log[0]["message"].as_str(), Some(""));
 }
+
+// ---- capture-only stack prints nothing; raw-JSON emit prints the bare line ----
+
+#[test]
+fn capture_only_stack_dispatches_only_wide_log_emit_record() {
+    // A layer that records every event the subscriber stack
+    // dispatches, standing in for a formatting layer. The stack here
+    // is capture-only plus this recorder: with no formatting layer
+    // installed nothing reaches stdout, and the recorder proves that
+    // the only record the stack sees is the one with the reserved
+    // `wide_log` target (which the capture layer skips).
+    let (slot, emit) = capture();
+    let count = Arc::new(Mutex::new(0usize));
+    let targets = Arc::new(Mutex::new(Vec::new()));
+    struct Recorder {
+        count: Arc<Mutex<usize>>,
+        targets: Arc<Mutex<Vec<String>>>,
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Recorder {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            *self.count.lock().unwrap() += 1;
+            self.targets
+                .lock()
+                .unwrap()
+                .push(event.metadata().target().to_string());
+        }
+    }
+    let recorder = Recorder {
+        count: count.clone(),
+        targets: targets.clone(),
+    };
+    let subscriber = tracing_subscriber::registry()
+        .with(WideLogCaptureLayer::new())
+        .with(recorder);
+    {
+        let _sub = tracing::subscriber::set_default(subscriber);
+        let _guard = WideLogGuard::builder().with_emit(emit).build();
+        ::tracing::info!("captured, not printed");
+    }
+
+    // The record reached the wide event...
+    let parsed = parse(&slot);
+    let log = parse_log(&parsed);
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["message"].as_str(), Some("captured, not printed"));
+    // ...and the stack dispatched exactly that one app record (tee
+    // semantics). With a formatting layer installed this record would
+    // print; the capture-only stack has none, so nothing reaches
+    // stdout. The guard's emit went through the custom emit closure,
+    // so no emit-side record exists at all here.
+    assert_eq!(*count.lock().unwrap(), 1);
+    assert_eq!(
+        targets.lock().unwrap().len(),
+        1,
+        "exactly the app record reached the stack: {targets:?}"
+    );
+    assert_ne!(
+        targets.lock().unwrap()[0],
+        "wide_log",
+        "the app record must not carry the reserved target"
+    );
+}

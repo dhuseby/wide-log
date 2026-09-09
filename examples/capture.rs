@@ -9,9 +9,13 @@
 //! cargo run --example capture --features tracing
 //! ```
 //!
-//! The emitted stdout line is one JSON object whose `log` array
-//! contains both the application-level `::tracing::info!` calls and
-//! the record from the dependency-like child module below.
+//! The subscriber stack is capture-only: the capture layer routes
+//! every record into the wide event and no formatting layer is
+//! installed, so the subscriber prints nothing. The guard emits
+//! through the raw-JSON closure, so the only stdout line is the bare
+//! JSON object whose `log` array contains both the application-level
+//! `::tracing::info!` calls and the records from the dependency-like
+//! child module below — with no timestamp or level prefix.
 
 use wide_log::wide_log;
 
@@ -39,19 +43,25 @@ mod dependency_like_crate {
 }
 
 fn main() {
-    // The capture layer must be part of the subscriber stack: the
-    // layer is what routes tracing records into the active wide
-    // event. The `fmt` layer formats and prints the emit-side JSON
-    // record (in tracing mode `default_emit` routes the finished
-    // event through `::tracing::info!`, so a formatting layer is
-    // needed to see output at all).
+    // Capture-only subscriber stack: the capture layer routes every
+    // canonical tracing record into the active wide event, and no
+    // formatting layer is installed, so the subscriber itself prints
+    // nothing.
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
         .with(crate::WideLogCaptureLayer::new())
         .init();
 
-    let _guard = WideLogGuard::builder().build();
+    // Raw JSON output: one bare JSON line, no timestamp or level
+    // prefix. The capture-only subscriber prints nothing, so this
+    // emit is the only thing that writes to stdout.
+    let _guard = WideLogGuard::builder()
+        .with_emit(|ev| {
+            if let Ok(json) = ev.to_json() {
+                println!("{json}");
+            }
+        })
+        .build();
 
     wl_set!("service.name", "capture-example");
     wl_inc!("requests");
@@ -59,10 +69,7 @@ fn main() {
     dependency_like_crate::do_work();
     ::tracing::info!("application finished");
 
-    // _guard drops → event serialized to JSON and emitted through
-    // the subscriber (tracing mode), with the `log` array carrying
-    // the entries captured above.
+    // _guard drops → one bare JSON line with the captured entries in
+    // the `log` array.
     drop(_guard);
-
-    wide_log::stdout_emit::flush();
 }

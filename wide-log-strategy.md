@@ -86,7 +86,11 @@ on the `tracing` feature:
 - **Feature on** — application and dependency code log through the
   canonical `tracing` macros; the generated `WideLogCaptureLayer` capture
   layer appends a `{level, message}` entry for every record emitted while a
-  guard is active.
+  guard is active. The recommended subscriber stack is capture-only
+  (no formatting layer, so the subscriber prints nothing) plus a
+  custom `with_emit` closure that prints the serialized event, so the
+  emitted stdout line is one bare JSON object with no timestamp or
+  level prefix — identical to the feature-off output shape.
 
 Each entry is serialized as:
 
