@@ -743,7 +743,101 @@ impl GenContext {
             }
         };
 
+        // The hook shim and the guard's hook registration exist only when
+        // the wide-log crate compiles the hook registry (the `tracing`
+        // feature is off there). With the feature on, the crate re-exports
+        // `tracing`'s level macros and records reach the event through
+        // `WideLogCaptureLayer`, so no hook surface exists to reference.
+        let hook_shim = if !tracing {
+            quote! {
+                /// Appends a `{level, message}` entry to the event active on
+                /// this thread. Installed as a hook in
+                /// `::wide_log::__macro_internals` so the crate-root level
+                /// macros exported by `wide-log` (`use wide_log::info;` in a
+                /// crate that never invoked `wide_log!`) reach this crate's
+                /// event.
+                pub fn __wl_log_hook(level: &'static str, message: &str) {
+                    if let Some(ev) = current() {
+                        ev.append_log_entry(level, message);
+                    }
+                }
+            }
+        } else {
+            TokenStream2::new()
+        };
+
+        let hook_guard_field = if !tracing {
+            quote! {
+                /// The log hook this guard installed in
+                /// `::wide_log::__macro_internals`; popped in `Drop` so the
+                /// hook-stack nesting mirrors the `CURRENT_EVENT` nesting.
+                log_hook: ::wide_log::__macro_internals::LogHook,
+            }
+        } else {
+            TokenStream2::new()
+        };
+
+        let hook_build_registration = if !tracing {
+            quote! {
+                // The hook goes in after the event pointer, so the
+                // hook stack is at least as deeply nested as
+                // `CURRENT_EVENT` while a guard is alive. `Drop` pops
+                // before the event restore, unwinding them in the
+                // opposite order. The shim is referenced as the bare
+                // item name; coercion to the type-erased `LogHook`
+                // signature happens at the push call.
+                let log_hook = __wl_log_hook;
+                ::wide_log::__macro_internals::push_log_hook(log_hook);
+            }
+        } else {
+            TokenStream2::new()
+        };
+
+        let hook_build_init = if !tracing {
+            quote! { log_hook, }
+        } else {
+            TokenStream2::new()
+        };
+
+        let hook_drop_pop = if !tracing {
+            quote! {
+                // The hook pops after the event restore so the
+                // hook stack unwinds in the opposite order it was
+                // built. A sync guard dropping on another thread
+                // than the one that built it (already unsound for
+                // the event restore) surfaces here as a
+                // `debug_assert!` in `pop_log_hook` instead of a
+                // silently mis-nested stack.
+                ::wide_log::__macro_internals::pop_log_hook(self.log_hook);
+            }
+        } else {
+            TokenStream2::new()
+        };
+
+        let hook_scope_wrap = if !tracing {
+            quote! {
+                // The hook is seeded through the registry's task
+                // scope so task-local (not thread-local) appends
+                // reach this event; the stack is torn down by the
+                // task scope itself on completion, cancellation, and
+                // unwinding.
+                ::wide_log::__macro_internals::scope_log_hook(
+                    __wl_log_hook,
+                    TASK_EVENT.scope(cell, f),
+                )
+                .await
+            }
+        } else {
+            // The hook registry compiles only with the feature off; in
+            // tracing mode the task-local event scope runs unwrapped.
+            quote! {
+                TASK_EVENT.scope(cell, f).await
+            }
+        };
+
         let guard_struct = quote! {
+            #hook_shim
+
             /// RAII guard that owns the active wide event.
             ///
             /// The guard is `#[must_use]` — binding it to `_guard` (the
@@ -768,6 +862,7 @@ impl GenContext {
                 /// The previous value of `CURRENT_EVENT` for restoration
                 /// on drop.
                 prev: *const ::wide_log::WideEvent<EventKey>,
+                #hook_guard_field
             }
 
             // SAFETY: the `prev` field is only accessed through the
@@ -936,9 +1031,11 @@ impl GenContext {
                         &mut *guard_ref.deref_mut()
                     };
                     let prev_ptr = CURRENT_EVENT.with(|c| c.replace(ptr));
+                    #hook_build_registration
                     WideLogGuard {
                         inner,
                         prev: prev_ptr as *const _,
+                        #hook_build_init
                     }
                 }
             }
@@ -1036,6 +1133,7 @@ impl GenContext {
                         CURRENT_EVENT.with(|c| c.get_ptr()) == self.prev as *mut _,
                         "wide-log: CURRENT_EVENT not restored to previous value on guard drop"
                     );
+                    #hook_drop_pop
                 }
             }
         };
@@ -1116,7 +1214,7 @@ impl GenContext {
                     let cell = ::wide_log::ContextCell::new();
                     cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
                     let _inner = inner;
-                    TASK_EVENT.scope(cell, f).await
+                    #hook_scope_wrap
                 }
 
                 pub async fn scope_default<F: ::std::future::Future>(f: F) -> F::Output {
@@ -1160,7 +1258,7 @@ impl GenContext {
                     let cell = ::wide_log::ContextCell::new();
                     cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
                     let _inner = inner;
-                    TASK_EVENT.scope(cell, f).await
+                    #hook_scope_wrap
                 }
 
                 /// Like `scope_default()` but applies a preset closure

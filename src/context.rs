@@ -208,6 +208,7 @@ unsafe impl<T: 'static> Sync for RestoreOnDrop<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn new_is_null() {
@@ -288,10 +289,23 @@ mod tests {
     // invocation uses a single thread and we set/clear the cell in
     // each test. The tests verify the RestoreOnDrop behavior, not
     // thread-safety of the cell itself.
+    //
+    // The test harness runs the tests concurrently on different
+    // threads, and the cell has no interior synchronization, so each
+    // test must leave the cell null on exit: a stale value from one
+    // test's teardown racing another test's setup would flake the
+    // pointer assertions.
     static TEST_CELL: ContextCell<u32> = const { ContextCell::new() };
+
+    // Serializes access to `TEST_CELL` across the three
+    // `restore_on_drop_*` tests. The cell itself is unsynchronized;
+    // without this lock, one test's teardown can interleave with
+    // another test's setup on the harness's worker threads.
+    static TEST_CELL_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn restore_on_drop_restores_previous_value() {
+        let _cell = TEST_CELL_LOCK.lock().unwrap();
         TEST_CELL.replace(std::ptr::null_mut());
         let mut a: u32 = 42;
         let ptr_a = &mut a as *mut u32;
@@ -310,10 +324,12 @@ mod tests {
 
         // Cell is restored to `ptr_a`.
         assert_eq!(TEST_CELL.get_ptr(), ptr_a);
+        TEST_CELL.replace(std::ptr::null_mut());
     }
 
     #[test]
     fn restore_on_drop_disarm_skips_restore() {
+        let _cell = TEST_CELL_LOCK.lock().unwrap();
         TEST_CELL.replace(std::ptr::null_mut());
         let mut a: u32 = 42;
         let ptr_a = &mut a as *mut u32;
@@ -327,10 +343,13 @@ mod tests {
 
         // Cell still has ptr_b; disarm skipped the restore.
         assert_eq!(TEST_CELL.get_ptr(), ptr_b);
+
+        TEST_CELL.replace(std::ptr::null_mut());
     }
 
     #[test]
     fn restore_on_drop_restores_null_initial_value() {
+        let _cell = TEST_CELL_LOCK.lock().unwrap();
         TEST_CELL.replace(std::ptr::null_mut());
         // Cell is null. Now replace with a value and create a guard that
         // expects the null as its previous value.

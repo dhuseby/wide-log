@@ -11,14 +11,20 @@
 //! accessor, `scope()` / `scope_default()` async functions (behind the
 //! `tokio` feature), `WideLogLayer` tower middleware (behind the `tokio`
 //! feature), the `WideLogCaptureLayer` capture layer (behind the `tracing`
-//! feature), and the logging macros (`wl_set!`, `wl_inc!`, and — when the
-//! `tracing` feature is off — `info!`, etc.) in one invocation.
+//! feature), and the logging macros (`wl_set!`, `wl_inc!`, and the level
+//! macros `info!` etc. — generated when the `tracing` feature is off,
+//! re-exported from `tracing` when it is on) in one invocation.
 //!
 //! ```
 //! use wide_log::wide_log;
+//! // With the feature on the generated macros do not exist; the crate
+//! // re-exports tracing's macros and the import keeps `info!` resolving
+//! // in both modes. With the feature off the import is unnecessary (the
+//! // generated macro is at the crate root via `#[macro_export]`) and a
+//! // plain `use` would collide with it, hence the cfg gate.
 //! #[cfg(feature = "tracing")]
 //! #[allow(unused_imports)]
-//! use wide_log::{debug, error, info, trace, warn};
+//! use wide_log::info;
 //!
 //! wide_log!({
 //!     "service": {
@@ -60,7 +66,7 @@
 //! use wide_log::wide_log;
 //! #[cfg(feature = "tracing")]
 //! #[allow(unused_imports)]
-//! use wide_log::{debug, error, info, trace, warn};
+//! use wide_log::info;
 //!
 //! wide_log!([
 //!   Event.Id => "correlation_id",
@@ -134,6 +140,31 @@
 //!   `log` array by the generated `WideLogCaptureLayer`. See
 //!   "Capturing tracing records" below.
 //!
+//! ## Using wide-log from downstream crates
+//!
+//! A crate that depends on `wide-log` but never invokes [`wide_log!`]
+//! can still log into the active wide event: the five level macros are
+//! exported at the crate root, and both the item-import and path-call
+//! spellings resolve. The import compiles in either feature mode:
+//! feature-off binds the hook-backed `#[macro_export]` macro rules;
+//! `--features tracing` binds `tracing`'s macros through the re-export.
+//!
+//! The contract:
+//!
+//! - **A schema must exist somewhere in the binary's dependency
+//!   graph.** Some crate must invoke [`wide_log!`] and hold an active
+//!   guard; the macros append to the innermost active event through a
+//!   hook that guard installs.
+//! - **No guard, no output.** When no guard is active on the calling
+//!   thread or task, every level macro is a silent no-op.
+//! - Inside a crate that invoked [`wide_log!`], the schema crate's
+//!   generated macros shadow the crate-root import (text-proximity
+//!   rule); both paths append identical `{level, message}` entries.
+//!
+//! The runnable three-crate demonstration lives in `tests/downstream/`
+//! in the repository (a schema lib, a schema-less lib, and a schema-less
+//! binary that log from all three into one event).
+//!
 //! ## Capturing tracing records
 //!
 //! With the `tracing` feature enabled, add the generated
@@ -180,6 +211,8 @@
 pub(crate) mod context;
 pub(crate) mod error;
 pub(crate) mod guard;
+#[cfg(not(feature = "tracing"))]
+pub(crate) mod hook_registry;
 pub(crate) mod key;
 pub(crate) mod log;
 pub(crate) mod value;
@@ -211,6 +244,24 @@ pub use context::RestoreOnDrop;
 #[doc(hidden)]
 pub mod __macro_internals {
     pub use crate::value::Value;
+    // The hook registry backs the crate-root level macros below. Schema
+    // crates' generated guards install and pop hooks through this surface
+    // so appends from any dependent crate reach the active event.
+    #[cfg(not(feature = "tracing"))]
+    pub use crate::hook_registry::{
+        LogHook, LogHookGuard, append_log_entry, append_log_entry_fmt, log_hook_stack_depth,
+        pop_log_hook, push_log_hook,
+    };
+    // The generated code references its own hook shim through
+    // `__macro_internals` (so a hook path exists even when the shim itself
+    // is a schema crate's local item). Re-exporting the type-erased
+    // signature here keeps the shim assignable from any schema crate.
+    #[cfg(not(feature = "tracing"))]
+    pub use crate::hook_registry::LogHook as __wl_log_hook;
+    // The async `scope()` family wraps its future in this call to seed the
+    // task's hook stack.
+    #[cfg(all(not(feature = "tracing"), feature = "tokio"))]
+    pub use crate::hook_registry::scope_log_hook;
 }
 
 pub mod stdout_emit;
@@ -292,3 +343,68 @@ pub mod __re_exports_uuid {
 // through the `WideLogCaptureLayer` layer) without app-code edits.
 #[cfg(feature = "tracing")]
 pub use ::tracing::{debug, error, info, trace, warn};
+
+// With the `tracing` feature off, the crate root exports its own level
+// macros so dependent crates that never invoke `wide_log!` can import
+// them (`use wide_log::info;`). Each macro appends a `{level, message}`
+// entry to the innermost active wide event through the hook registry in
+// `__macro_internals`; with no guard active anywhere in the dependency
+// graph, the call is a silent no-op.
+//
+// In a crate that invoked `wide_log!`, the schema crate's generated
+// macros shadow these by text-proximity — both paths append identically,
+// the generated ones through the typed `CURRENT_EVENT` directly.
+#[cfg(not(feature = "tracing"))]
+#[macro_export]
+macro_rules! info {
+    ($msg:literal) => {
+        ::wide_log::__macro_internals::append_log_entry("info", $msg)
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        ::wide_log::__macro_internals::append_log_entry_fmt("info", ::std::format_args!($fmt, $($arg)*))
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+#[macro_export]
+macro_rules! warn {
+    ($msg:literal) => {
+        ::wide_log::__macro_internals::append_log_entry("warn", $msg)
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        ::wide_log::__macro_internals::append_log_entry_fmt("warn", ::std::format_args!($fmt, $($arg)*))
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+#[macro_export]
+macro_rules! error {
+    ($msg:literal) => {
+        ::wide_log::__macro_internals::append_log_entry("error", $msg)
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        ::wide_log::__macro_internals::append_log_entry_fmt("error", ::std::format_args!($fmt, $($arg)*))
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+#[macro_export]
+macro_rules! debug {
+    ($msg:literal) => {
+        ::wide_log::__macro_internals::append_log_entry("debug", $msg)
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        ::wide_log::__macro_internals::append_log_entry_fmt("debug", ::std::format_args!($fmt, $($arg)*))
+    };
+}
+
+#[cfg(not(feature = "tracing"))]
+#[macro_export]
+macro_rules! trace {
+    ($msg:literal) => {
+        ::wide_log::__macro_internals::append_log_entry("trace", $msg)
+    };
+    ($fmt:literal, $($arg:tt)*) => {
+        ::wide_log::__macro_internals::append_log_entry_fmt("trace", ::std::format_args!($fmt, $($arg)*))
+    };
+}

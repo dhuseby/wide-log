@@ -1,0 +1,16 @@
+[package]
+name = "importer-bin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+importer-lib = { path = "../importer_lib" }
+schema-lib = { path = "../schema_lib" }
+sonic-rs = "0.5"
+wide-log = { path = "../../.." }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
+
+[features]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "importer-lib/tracing", "schema-lib/tracing"]
