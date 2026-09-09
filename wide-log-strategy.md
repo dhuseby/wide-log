@@ -238,11 +238,11 @@ The `wide_log!` JSON supports the following value markers:
 | `wl_dec!(path)` | Decrement a numeric field by 1 at a nested path (init to -1 if absent) |
 | `wl_add!(path, n)` | Add a number to a numeric field at a nested path |
 | `wl_null!(path)` | Set a field to null at a nested path |
-| `info!(msg)` / `info!(fmt, ...)` | Append info-level log entry (compiled only when the `tracing` feature is off; with the feature on, the crate re-exports `tracing`'s macros and records are captured by `WideLogCaptureLayer`) |
-| `warn!(msg)` / `warn!(fmt, ...)` | Append warn-level log entry (feature-off only, as above) |
-| `error!(msg)` / `error!(fmt, ...)` | Append error-level log entry (feature-off only, as above) |
-| `debug!(msg)` / `debug!(fmt, ...)` | Append debug-level log entry (feature-off only, as above) |
-| `trace!(msg)` / `trace!(fmt, ...)` | Append trace-level log entry (feature-off only, as above) |
+| `info!(msg)` / `info!(fmt, ...)` | Append info-level log entry. In a `wide_log!`-invoking crate: feature off appends directly (generated macro); feature on re-exports `tracing`'s macros and records are captured by `WideLogCaptureLayer`. In any crate: importable from the `wide-log` crate root (feature off hooks into the active event; feature on resolves to tracing's macros) |
+| `warn!(msg)` / `warn!(fmt, ...)` | Append warn-level log entry (importable as above) |
+| `error!(msg)` / `error!(fmt, ...)` | Append error-level log entry (importable as above) |
+| `debug!(msg)` / `debug!(fmt, ...)` | Append debug-level log entry (importable as above) |
+| `trace!(msg)` / `trace!(fmt, ...)` | Append trace-level log entry (importable as above) |
 
 All macros are no-ops when no guard is active (`current()` returns `None`).
 

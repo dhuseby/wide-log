@@ -65,6 +65,36 @@ mode. Feature-off users lose nothing.
 
 ---
 
+## 0.1 Migrating to 0.8 from 0.7
+
+0.8 is a purely additive release: the five level macros are now
+importable from the `wide-log` crate root by crates that never invoke
+`wide_log!`.
+
+- **Libraries that do not own the schema** can now log into the active
+  wide event:
+
+  ```rust
+  use wide_log::{debug, error, info, trace, warn};
+
+  info!("from a library crate");
+  ```
+
+  A schema must still exist somewhere in the binary's dependency
+  graph — some crate must invoke `wide_log!` and hold an active
+  guard. Without a guard, the macros are silent no-ops. Inside a
+  crate that *does* invoke `wide_log!`, the generated macros win
+  locally (text-proximity shadowing) and behave identically to the
+  crate-root import.
+- **Feature-on users are unaffected**: the `tracing`-mode re-export
+  already resolved `use wide_log::info;` to tracing's macros; 0.8
+  makes the feature-off mode resolve the same import spelling.
+
+No existing API changed. No action is required for crates that
+already invoke `wide_log!` or for `--features tracing` users.
+
+---
+
 ## 1. `tracing::info!` → `wide_log::info!`
 
 `tracing::info!("request received")` and
@@ -113,7 +143,10 @@ With the `tracing` feature on, the generated level macros are not
 compiled and `wide-log` re-exports `tracing`'s level macros instead:
 unqualified `info!` **is** the canonical tracing macro, and records
 are captured into the active wide event by the generated
-`WideLogCaptureLayer` (see section 0 above).
+`WideLogCaptureLayer` (see section 0 above). Since 0.8, the crate-root
+export also makes the same import work in crates that never invoked
+`wide_log!`; inside a `wide_log!`-invoking crate the generated macros
+win locally and behave identically to the crate-root import.
 
 The generated `default_emit` (the function that runs when the guard
 drops) depends on the feature: without it, the JSON line goes
@@ -500,7 +533,7 @@ When porting an existing `tracing`-based service to `wide-log`:
 
 | `tracing` | `wide-log` |
 |---|---|
-| `tracing::info!(...)` | Feature off: `info!(...)` (generated macro; fully qualify to call real tracing). Feature on: unqualified `info!` **is** tracing's macro (re-export), captured via `WideLogCaptureLayer` |
+| `tracing::info!(...)` | Feature off: `info!(...)` (generated macro; fully qualify to call real tracing). Feature on: unqualified `info!` **is** tracing's macro (re-export), captured via `WideLogCaptureLayer`. Either mode: importable from the `wide-log` crate root in crates that never invoke `wide_log!` |
 | `tracing::info_span!(name, k = v)` | `wide_log!({ "k": null }); let _g = WideLogGuard::builder().build(); wl_set!("k", v);` |
 | `#[tracing::instrument]` | No equivalent — write the guard explicitly |
 | `span.record("k", v)` | `wl_set!("k", v)` |
@@ -523,7 +556,7 @@ When porting an existing `tracing`-based service to `wide-log`:
 ## 11. See also
 
 - [README.md](./README.md) — quick start, builder pattern, macro reference
-- [CHANGELOG.md](./CHANGELOG.md) — full release notes (latest: 0.6.3)
+- [CHANGELOG.md](./CHANGELOG.md) — full release notes
 - [`examples/basic.rs`](./examples/basic.rs) — minimal `wide_log!` usage
 - [`examples/axum_ok.rs`](./examples/axum_ok.rs) — `WideLogLayer` with axum
 - [`examples/tracing_emit.rs`](./examples/tracing_emit.rs) — custom emit that routes through `tracing`

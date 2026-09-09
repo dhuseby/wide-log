@@ -414,15 +414,15 @@ fn main() {
 | Macro | Description |
 |---|---|
 | `wl_set!(path, val)` | Set/replace a field value at a nested path |
-| `wl_inc!(path)` | Increment a numeric field by 1 at a nested path (init to 1 if absent) |
-| `wl_dec!(path)` | Decrement a numeric field by 1 at a nested path (init to -1 if absent) |
+| `wl_inc!(path)` | Increment a numeric field at a nested path (init to 1 if absent) |
+| `wl_dec!(path)` | Decrement a numeric field at a nested path (init to -1 if absent) |
 | `wl_add!(path, n)` | Add a number to a numeric field at a nested path |
 | `wl_null!(path)` | Set a field to null at a nested path |
-| `info!(msg)` / `info!(fmt, ...)` | Append info-level log entry (compiled only when the `tracing` feature is **off**; with the feature on, `wide-log` re-exports `tracing`'s macros — see "Capturing tracing records") |
-| `warn!(msg)` / `warn!(fmt, ...)` | Append warn-level log entry (feature-off only, as above) |
-| `error!(msg)` / `error!(fmt, ...)` | Append error-level log entry (feature-off only, as above) |
-| `debug!(msg)` / `debug!(fmt, ...)` | Append debug-level log entry (feature-off only, as above) |
-| `trace!(msg)` / `trace!(fmt, ...)` | Append trace-level log entry (feature-off only, as above) |
+| `info!(msg)` / `info!(fmt, ...)` | Append an info-level log entry. Importable from the `wide-log` crate root in both feature modes (see "Using wide-log from downstream crates"); inside a crate that invoked `wide_log!` the generated macro shadows the import and appends through the typed event directly |
+| `warn!(msg)` / `warn!(fmt, ...)` | Append a warn-level log entry (importable as above) |
+| `error!(msg)` / `error!(fmt, ...)` | Append an error-level log entry (importable as above) |
+| `debug!(msg)` / `debug!(fmt, ...)` | Append a debug-level log entry (importable as above) |
+| `trace!(msg)` / `trace!(fmt, ...)` | Append a trace-level log entry (importable as above) |
 
 ## JSON Syntax Reference
 
@@ -495,6 +495,50 @@ including intermediate paths (e.g., `"service"` → `&[Service]`) and full leaf
 paths (e.g., `"service.name"` → `&[Service, Name]`). When the input to
 `__wl_resolve_path` is a string literal (as in `wl_set!("service.name", ...)`),
 the compiler constant-folds the match — zero runtime cost.
+
+## Using wide-log from downstream crates
+
+A crate that depends on `wide-log` but never invokes `wide_log!` can
+still log into the active wide event. The five level macros are
+exported at the `wide-log` crate root:
+
+```rust
+use wide_log::{debug, error, info, trace, warn};
+
+info!("from a library crate: {}", value);
+```
+
+Both spellings resolve: `use wide_log::info;` (item import) and
+`wide_log::info!(...)` (path call). `#[macro_export]` puts the rules at
+the crate root, so dependent crates can import them like any other
+item.
+
+Requirements and behavior:
+
+- **A schema must exist somewhere in the binary's dependency graph.**
+  Some crate in the final binary must invoke `wide_log!` and hold an
+  active guard; the macros append to the innermost active event through
+  a hook that guard installs.
+- **No guard, no output.** When no wide-log guard is active anywhere on
+  the calling thread or task, every level macro is a silent no-op.
+  Nothing panics, nothing is enqueued.
+- **Appends are best-effort.** A re-entrant format-arg call while the
+  format buffer is held is skipped rather than panicking.
+
+How the macros resolve in each feature mode:
+
+| Mode | `use wide_log::info;` resolves to | Entry path |
+|---|---|---|
+| Default (feature off) | The `#[macro_export]` macro rules on the `wide-log` crate root | Hook installed by the innermost active guard |
+| `--features tracing` | `tracing`'s macros, re-exported by `wide-log` | Canonical tracing record, captured by `WideLogCaptureLayer` |
+
+Inside a crate that invoked `wide_log!`, the schema crate's generated
+macros shadow the crate-root import (text-proximity rule). Both paths
+append identical `{level, message}` entries; the generated one skips
+the hook indirection and writes the typed event directly. See
+`tests/downstream/` in the repository for a runnable three-crate
+example (a schema lib, a schema-less lib, and a schema-less binary that
+logs from all of them into one event).
 
 ## Capturing tracing records
 
@@ -681,14 +725,16 @@ lines) if `set_flush_policy` was never called.
   `WideLogLayer` tower middleware, and `tokio::task_local!` storage.
 - `uuid` — enables `WideLogGuardBuilder::with_uuid()` for UUIDv4 ID
   generation instead of the default ULID.
-- `tracing` — *transition aid only*. When enabled, the
-  macro-generated `default_emit` routes the serialized event through
-  `::tracing::info!(event = %json)` instead of writing the bare
-  JSON line to non-blocking stdout. A one-time `eprintln!` warning
-  is emitted on first use. New code should disable this feature
-  and use the default (bare JSON to stdout) or a custom
-  `with_emit` closure. See `MIGRATING.md` for the full
-  `tracing → wide-log` mapping.
+- `tracing` — selects how log messages reach the wide event. With the
+  feature on, the crate re-exports `tracing`'s level macros instead of
+  compiling its own, and the generated `default_emit` routes the
+  serialized event through
+  `::tracing::info!(target: "wide_log", event = %json)`. Install
+  `WideLogCaptureLayer` in the subscriber stack so canonical tracing
+  records (from the application and any dependency crate) are appended
+  to the active wide event. Without the feature the generated level
+  macros append directly and no subscriber is needed. See "Capturing
+  tracing records" and "Using wide-log from downstream crates".
 
 ## Migrating from `tracing`
 

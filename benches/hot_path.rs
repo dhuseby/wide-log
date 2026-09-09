@@ -268,6 +268,20 @@ fn bench_capture_vs_macro(c: &mut Criterion) {
             drop(black_box(_guard));
         })
     });
+
+    // The crate-root import path (`use wide_log::info;`): the same
+    // append routed through the hook registry instead of the typed
+    // event pointer. Both paths land in the same event while the
+    // schema crate's guard is active; the delta against
+    // `direct_macro` is the hook indirection cost.
+    group.bench_function("crate_root_macro", |b| {
+        b.iter(|| {
+            let _guard = WideLogGuard::builder().with_emit(noop_emit).build();
+            wide_log::info!("capture path entry {}", 1);
+            drop(black_box(_guard));
+        })
+    });
+
     group.finish();
 }
 

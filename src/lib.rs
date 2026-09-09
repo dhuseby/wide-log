@@ -11,14 +11,20 @@
 //! accessor, `scope()` / `scope_default()` async functions (behind the
 //! `tokio` feature), `WideLogLayer` tower middleware (behind the `tokio`
 //! feature), the `WideLogCaptureLayer` capture layer (behind the `tracing`
-//! feature), and the logging macros (`wl_set!`, `wl_inc!`, and — when the
-//! `tracing` feature is off — `info!`, etc.) in one invocation.
+//! feature), and the logging macros (`wl_set!`, `wl_inc!`, and the level
+//! macros `info!` etc. — generated when the `tracing` feature is off,
+//! re-exported from `tracing` when it is on) in one invocation.
 //!
 //! ```
 //! use wide_log::wide_log;
+//! // With the feature on the generated macros do not exist; the crate
+//! // re-exports tracing's macros and the import keeps `info!` resolving
+//! // in both modes. With the feature off the import is unnecessary (the
+//! // generated macro is at the crate root via `#[macro_export]`) and a
+//! // plain `use` would collide with it, hence the cfg gate.
 //! #[cfg(feature = "tracing")]
 //! #[allow(unused_imports)]
-//! use wide_log::{debug, error, info, trace, warn};
+//! use wide_log::info;
 //!
 //! wide_log!({
 //!     "service": {
@@ -60,7 +66,7 @@
 //! use wide_log::wide_log;
 //! #[cfg(feature = "tracing")]
 //! #[allow(unused_imports)]
-//! use wide_log::{debug, error, info, trace, warn};
+//! use wide_log::info;
 //!
 //! wide_log!([
 //!   Event.Id => "correlation_id",
@@ -133,6 +139,31 @@
 //!   or any dependency crate) are appended to the active event's
 //!   `log` array by the generated `WideLogCaptureLayer`. See
 //!   "Capturing tracing records" below.
+//!
+//! ## Using wide-log from downstream crates
+//!
+//! A crate that depends on `wide-log` but never invokes [`wide_log!`]
+//! can still log into the active wide event: the five level macros are
+//! exported at the crate root, and both the item-import and path-call
+//! spellings resolve. The import compiles in either feature mode:
+//! feature-off binds the hook-backed `#[macro_export]` macro rules;
+//! `--features tracing` binds `tracing`'s macros through the re-export.
+//!
+//! The contract:
+//!
+//! - **A schema must exist somewhere in the binary's dependency
+//!   graph.** Some crate must invoke [`wide_log!`] and hold an active
+//!   guard; the macros append to the innermost active event through a
+//!   hook that guard installs.
+//! - **No guard, no output.** When no guard is active on the calling
+//!   thread or task, every level macro is a silent no-op.
+//! - Inside a crate that invoked [`wide_log!`], the schema crate's
+//!   generated macros shadow the crate-root import (text-proximity
+//!   rule); both paths append identical `{level, message}` entries.
+//!
+//! The runnable three-crate demonstration lives in `tests/downstream/`
+//! in the repository (a schema lib, a schema-less lib, and a schema-less
+//! binary that log from all three into one event).
 //!
 //! ## Capturing tracing records
 //!
