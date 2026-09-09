@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-09
+
+### Added
+- The five level macros (`info!`, `warn!`, `error!`, `debug!`,
+  `trace!`) are now importable from the `wide-log` crate root by
+  dependent crates that never invoke `wide_log!`:
+  `use wide_log::{debug, error, info, trace, warn};`. Both the item
+  import and the path-call spelling (`wide_log::info!(...)`) resolve.
+  With default features the macros append `{level, message}` entries to
+  the innermost active wide event through a hook the active guard
+  installs; when no wide-log guard is active they are silent no-ops
+  that neither panic nor emit. With `--features tracing` the import
+  resolves to `tracing`'s macros through the existing re-export, so the
+  same code compiles in both feature modes. Inside a crate that invokes
+  `wide_log!`, the generated macros shadow the crate-root import and
+  behave identically.
+- `tests/downstream/`, a three-crate workspace demonstrating the
+  cross-crate usage end to end: a schema-owning library, a schema-less
+  library, and a schema-less binary that log from all three into one
+  event, in both feature modes.
+
+### Changed
+- `wide-log-macros` dependency updated to 0.8.0. The macros crate
+  generates the guard-side hook registration that routes crate-root
+  macro appends from any dependent crate into the schema crate's
+  active event (sync guards register on build and pop on drop; the
+  async `scope()` family seeds the task hook stack).
+
 ## [0.7.0] - 2026-09-08
 
 ### Changed
@@ -1212,6 +1240,8 @@ For maximum durability, use `FlushPolicy::per_line()`.
 - Examples: `basic`, `custom_emit`, `explicit_duration`.
 - Integration and macro test suites.
 
+[0.8.0]: https://github.com/dhuseby/wide-log/releases/tag/0.8.0
+[0.7.0]: https://github.com/dhuseby/wide-log/releases/tag/0.7.0
 [0.6.5]: https://github.com/dhuseby/wide-log/releases/tag/0.6.5
 [0.6.4]: https://github.com/dhuseby/wide-log/releases/tag/0.6.4
 [0.5.0]: https://github.com/dhuseby/wide-log/releases/tag/0.5.0
