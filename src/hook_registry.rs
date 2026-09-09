@@ -54,11 +54,39 @@ tokio::task_local! {
     static TASK_LOG_HOOKS: RefCell<Vec<LogHook>>;
 }
 
+/// Runs `f` with `hook` installed as the task's log hook.
+///
+/// The generated async `scope()` family wraps its future in this call so
+/// crate-root macro appends from anywhere in the task reach the scoped
+/// event. The hook is active exactly while the task scope is: tokio
+/// restores the previous stack on completion, on cancellation (the scope
+/// future's drop re-enters the task-local), and during unwinding, so no
+/// separate drop guard is needed.
+#[cfg(feature = "tokio")]
+#[inline]
+pub async fn scope_log_hook<F: std::future::Future>(hook: LogHook, f: F) -> F::Output {
+    TASK_LOG_HOOKS.scope(RefCell::new(vec![hook]), f).await
+}
+
+/// Number of hooks on the innermost active stack for the calling context:
+/// the task stack under the `tokio` feature when a task scope is active,
+/// the thread stack otherwise. Diagnostic surface for the hook-stack
+/// nesting invariant; not part of the public API.
+#[doc(hidden)]
+#[inline]
+pub fn log_hook_stack_depth() -> usize {
+    #[cfg(feature = "tokio")]
+    if let Ok(depth) = TASK_LOG_HOOKS.try_with(|cell| cell.borrow().len()) {
+        return depth;
+    }
+    LOG_HOOKS.with(|cell| cell.borrow().len())
+}
+
 /// Removes the last occurrence of `hook` from `hooks`, returning whether
-/// one was found. Address comparison through `fn_addr_eq`: a hook shim is
-/// a single codegen-unit-local function per schema crate, so address
-/// identity is the matching key, and the lint's codegen-unit concern does
-/// not apply within one crate's own stack.
+/// one was found. Address comparison through `fn_addr_eq`: each schema
+/// crate emits exactly one hook shim function, so address identity is the
+/// matching key (same-crate duplicates would be the same function; the
+/// comparison never has to distinguish merged codegen units).
 fn remove_hook(hooks: &mut Vec<LogHook>, hook: LogHook) -> bool {
     match hooks.iter().rposition(|h| std::ptr::fn_addr_eq(*h, hook)) {
         Some(pos) => {
@@ -383,6 +411,39 @@ mod tests {
         assert_eq!(
             *TASK_CALLS.lock().unwrap(),
             vec![("info", "inside".to_string())]
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn scope_log_hook_installs_and_restores_the_task_stack() {
+        static SCOPE_CALLS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
+        fn scope_hook(level: &'static str, message: &str) {
+            SCOPE_CALLS
+                .lock()
+                .unwrap()
+                .push((level, message.to_string()));
+        }
+
+        assert_eq!(log_hook_stack_depth(), 0, "no stacks active at start");
+        scope_log_hook(scope_hook, async {
+            assert_eq!(
+                log_hook_stack_depth(),
+                1,
+                "the scope's hook is the innermost entry"
+            );
+            append_log_entry("info", "from the scoped task");
+        })
+        .await;
+        assert_eq!(
+            log_hook_stack_depth(),
+            0,
+            "the task stack is restored after the scope completes"
+        );
+        append_log_entry("warn", "after the scope");
+        assert_eq!(
+            *SCOPE_CALLS.lock().unwrap(),
+            vec![("info", "from the scoped task".to_string())]
         );
     }
 }

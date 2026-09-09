@@ -218,8 +218,19 @@ pub mod __macro_internals {
     // so appends from any dependent crate reach the active event.
     #[cfg(not(feature = "tracing"))]
     pub use crate::hook_registry::{
-        LogHook, LogHookGuard, append_log_entry, append_log_entry_fmt, pop_log_hook, push_log_hook,
+        LogHook, LogHookGuard, append_log_entry, append_log_entry_fmt, log_hook_stack_depth,
+        pop_log_hook, push_log_hook,
     };
+    // The generated code references its own hook shim through
+    // `__macro_internals` (so a hook path exists even when the shim itself
+    // is a schema crate's local item). Re-exporting the type-erased
+    // signature here keeps the shim assignable from any schema crate.
+    #[cfg(not(feature = "tracing"))]
+    pub use crate::hook_registry::LogHook as __wl_log_hook;
+    // The async `scope()` family wraps its future in this call to seed the
+    // task's hook stack.
+    #[cfg(all(not(feature = "tracing"), feature = "tokio"))]
+    pub use crate::hook_registry::scope_log_hook;
 }
 
 pub mod stdout_emit;
