@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "wide-log-macros"]
+members = [".", "wide-log-macros", "tests/downstream/schema_lib", "tests/downstream/importer_lib", "tests/downstream/importer_bin"]
 exclude = ["wide-log-fuzz"]
 resolver = "2"
 

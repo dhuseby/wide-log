@@ -1,0 +1,15 @@
+[package]
+name = "importer-lib"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wide-log = { path = "../../.." }
+
+# In tracing mode the level macros resolve to tracing's macros through the
+# wide-log re-export, which requires the `tracing` types in scope.
+tracing = { version = "0.1", optional = true }
+
+[features]
+tracing = ["wide-log/tracing", "dep:tracing"]
