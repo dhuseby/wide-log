@@ -48,6 +48,10 @@ async fn main() {
     for h in handles {
         h.await.unwrap();
     }
+
+    // force the default emitter to output the batched messages
+    #[cfg(not(feature = "tracing"))]
+    wide_log::stdout_emit::flush();
 }
 
 async fn handle_request(id: u64) {

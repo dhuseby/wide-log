@@ -131,3 +131,7 @@ name = "tracing_emit"
 [[example]]
 name = "capture"
 required-features = ["tracing"]
+
+[[example]]
+name = "pretty_print"
+required-features = ["tracing"]
