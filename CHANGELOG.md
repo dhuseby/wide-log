@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-09-10
+
+### Added
+- `examples/pretty_print.rs`, demonstrating wide-log in an application
+  that owns a custom layer in its tracing subscriber stack. The stack
+  combines `WideLogCaptureLayer` (capture) with the application's
+  `PrettyPrintLayer`, which pretty-prints the finished event JSON from
+  the reserved-target `wide_log` record that the default emit produces.
+  Run with `cargo run --example pretty_print --features tracing`.
+- `tests/tracing_pretty_print.rs`, an integration test that runs the
+  example as a subprocess and asserts on its pretty-printed output.
+- A README pointer to the new example in the "Capturing tracing
+  records" section.
+
 ## [0.8.0] - 2026-09-09
 
 ### Added

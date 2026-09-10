@@ -644,6 +644,13 @@ custom-emit approach above. See `examples/capture.rs` for a runnable
 end-to-end demonstration of the capture-only stack plus raw-JSON
 emit.
 
+You can also keep the default emit and pretty-print the finished
+event from an application-owned layer:
+`examples/pretty_print.rs` shows a stack with `WideLogCaptureLayer`
+for capture plus a custom layer that pretty-prints the
+reserved-target `wide_log` record. Run with
+`cargo run --example pretty_print --features tracing`.
+
 ## Flush Policy and Durability Tradeoff
 
 The `default_emit` function hands serialized JSON lines to a dedicated
