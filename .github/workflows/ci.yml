@@ -79,11 +79,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install MSRV toolchain
-        run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
       - name: Build on declared MSRV
-        run: cargo +1.88.0 build --workspace --all-features --locked
+        run: cargo +1.99.1 build --workspace --all-features --locked
 
   miri:
     name: miri

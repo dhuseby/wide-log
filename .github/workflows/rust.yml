@@ -2,32 +2,86 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["master"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["master"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Build
-      run: cargo build --verbose
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-    - name: Run tests
-      run: cargo test --verbose
+      - name: Check Code Format
+        run: cargo fmt --all -- --check
 
-    - name: Install cargo audit
-      run: cargo install cargo-audit --locked
+      - name: Code Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-    - name: Generate cargo lock if needed
-      run: cargo generate-lockfile
+      - name: Build
+        run: cargo build --verbose --all-features
 
-    - name: Audit dependencies
-      run: cargo audit
+      - name: Run tests
+        run: cargo test --verbose --all-features
+
+  msrv:
+    name: Verify MSRV (1.99.1)
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@1.99.1
+
+      - name: Check
+        run: cargo check --all-features
+
+  coverage:
+    name: Coverage
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov
+
+      - name: Run coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
+  audit:
+    name: Security Audit
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
