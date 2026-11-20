@@ -13,12 +13,12 @@ updates:
       - "dependencies"
       - "cargo"
     # Track all dependencies the project depends on, including
-    # transitive ones. The crate is pre-1.0 so we do not want to
+    # indirect ones. The crate is pre-1.0 so we do not want to
     # auto-merge; we want a PR per bump so reviewers can spot
     # regressions.
     allow:
       - dependency-type: "direct"
-      - dependency-type: "transitive"
+      - dependency-type: "indirect"
     groups:
       patch:
         patterns:
