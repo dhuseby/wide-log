@@ -10,7 +10,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: Verify MSRV (1.99.1)
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@1.99.1
+
+      - name: Check
+        run: cargo check --all-features
+
   build_linux:
+    needs: msrv
     name: Build Linux
     strategy:
       matrix:
@@ -56,6 +70,7 @@ jobs:
         run: cargo test --verbose --all-features
 
   build_macos:
+    needs: msrv
     name: Build macOS
     strategy:
       matrix:
@@ -75,20 +90,8 @@ jobs:
       - name: Build
         run: cargo build --target ${{ matrix.target }} --release --all-features
 
-  msrv:
-    name: Verify MSRV (1.99.1)
-    runs-on: [self-hosted, linux, x64]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust Toolchain (1.99.1)
-        uses: dtolnay/rust-toolchain@1.99.1
-
-      - name: Check
-        run: cargo check --all-features
-
   coverage:
+    needs: [build_linux, build_macos]
     name: Coverage
     runs-on: [self-hosted, linux, x64]
 
@@ -113,6 +116,7 @@ jobs:
           fail_ci_if_error: false
 
   audit:
+    needs: [build_linux, build_macos]
     name: Security Audit
     runs-on: [self-hosted, linux, x64]
 
