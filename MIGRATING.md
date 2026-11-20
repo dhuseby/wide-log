@@ -95,6 +95,54 @@ already invoke `wide_log!` or for `--features tracing` users.
 
 ---
 
+## 0.2 Migrating to 0.9 from 0.8
+
+0.9 replaces the unmaintained `chrono` and `chrono-tz` crates with
+`jiff` (RUSTSEC-2026-0543 / RUSTSEC-2026-0555). Two public API items
+change; everything else stays the same. The emitted `timestamp` format
+is unchanged: it is still an RFC 3339 string with a numeric offset
+(`+00:00` for the UTC default, never `Z`).
+
+- **`with_timezone` now takes `jiff::tz::TimeZone`** instead of
+  `chrono_tz::Tz`, and the default remains UTC (`TimeZone::UTC`):
+
+  ```rust
+  // 0.8 — compile-time enum variant
+  use chrono_tz::Tz;
+  let _guard = WideLogGuard::builder()
+      .with_timezone(Tz::America__New_York)
+      .build();
+
+  // 0.9 — runtime lookup
+  use jiff::tz::TimeZone;  // or: use wide_log::__re_exports_core::jiff::tz::TimeZone;
+  let tz = TimeZone::get("America/New_York")
+      .expect("valid IANA time zone America/New_York");
+  let _guard = WideLogGuard::builder().with_timezone(tz).build();
+  ```
+
+- **Named zones moved from compile-time enum variants to a runtime
+  lookup.** `chrono-tz` exposed one enum variant per IANA zone; `jiff`
+  resolves the name at runtime via `TimeZone::get(name)`, which
+  returns a `Result` and matches names case-insensitively. A name that
+  is not in the IANA database now returns `Err` at construction time
+  instead of failing to compile. `TimeZone` implements neither
+  `Display` nor `FromStr`, so never use `.parse()` on one.
+
+- **`chrono_tz::Tz` was `Copy`; `jiff::tz::TimeZone` is only `Clone`.**
+  Code that implicitly copied a `Tz` value to reuse it after passing
+  one by value to `.with_timezone(...)` must now call `.clone()`.
+  Cloning is cheap (an `Arc` reference bump).
+
+- **The `__re_exports_core` re-exports changed.** The module now
+  re-exports `jiff` (and `ulid`) instead of `chrono` and `chrono_tz`:
+  reach the type via `wide_log::__re_exports_core::jiff::tz::TimeZone`,
+  or depend on the `jiff` crate directly — it is the same type.
+  The generated `wide_log!` builder and emit code use the re-export
+  path, so app code does not need `jiff` in its dependency list unless
+  it names the type itself.
+
+---
+
 ## 1. `tracing::info!` → `wide_log::info!`
 
 `tracing::info!("request received")` and
