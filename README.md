@@ -74,7 +74,7 @@ fn main() {
     //
     // {"service":{"name":"example-service","version":"1.0.0"},
     //  "duration":{"total_ms":42},"requests":1,
-    //  "event":{"timestamp":"2026-07-12T12:00:00.000Z","id":"01J6XK5R..."},
+    //  "event":{"timestamp":"2026-07-12T12:00:00.000+00:00","id":"01J6XK5R..."},
     //  "log":[{"level":"info","message":"request received"},
     //         {"level":"warn","message":"upstream slow"}]}
 }
@@ -149,9 +149,9 @@ specifying a custom timezone, ID generator, and emit function:
 let _guard = WideLogGuard::builder().build();
 
 // Custom timezone
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
 let _guard = WideLogGuard::builder()
-    .with_timezone(Tz::America__New_York)
+    .with_timezone(TimeZone::get("America/New_York").expect("valid IANA time zone America/New_York"))
     .build();
 
 // Custom ID generator
@@ -170,8 +170,9 @@ let _guard = WideLogGuard::builder()
     .build();
 
 // Combined
+let tz = TimeZone::get("America/New_York").expect("valid IANA time zone America/New_York");
 let _guard = WideLogGuard::builder()
-    .with_timezone(Tz::America__New_York)
+    .with_timezone(tz)
     .with_id(|| "custom-id".to_string())
     .with_emit(|ev| { println!("{}", ev.to_json().unwrap()); })
     .build();
@@ -181,7 +182,7 @@ let _guard = WideLogGuard::builder()
 
 | Method | Description | Default |
 |---|---|---|
-| `with_timezone(tz: chrono_tz::Tz)` | Timezone for timestamp formatting | `chrono_tz::Tz::UTC` |
+| `with_timezone(tz: jiff::tz::TimeZone)` | Timezone for timestamp formatting | `TimeZone::UTC` (jiff) |
 | `with_id(F: FnOnce() -> String)` | Custom ID generator closure | ULID via `ulid` crate |
 | `with_uuid()` | Use UUIDv4 for ID (requires `uuid` feature) | — |
 | `with_emit(F: FnOnce(&WideEvent)>)` | Custom emit function | `default_emit` (serialize + non-blocking stdout) |

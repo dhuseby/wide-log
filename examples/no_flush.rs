@@ -53,7 +53,7 @@ fn main() {
     init_capture();
     // Under the `tracing` feature, emit through the raw-JSON closure:
     // the capture-only subscriber prints nothing and the closure
-    // prints synchronously, so the writer-thread timer is not part of
+    // prints inline, so the writer-thread timer is not part of
     // this mode's path. The no-flush demonstration below applies to
     // the default (feature-off) branch, where `default_emit` hands
     // the line to the non-blocking stdout writer.

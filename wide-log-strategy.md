@@ -35,7 +35,7 @@ Example of a minimal emitted wide log (auto-added keys only):
 ```
 {
   "event": {
-    "timestamp": "2026-07-12T12:00:00.000Z",
+    "timestamp": "2026-07-12T12:00:00.000+00:00",
     "id": "01J6XK5R7N4Q2V3XH65992TQV"
   },
   "duration": {
@@ -63,7 +63,7 @@ accumulated log entries:
     "total_ms": 869.6
   },
   "event": {
-    "timestamp": "2026-07-12T12:00:00.000Z",
+    "timestamp": "2026-07-12T12:00:00.000+00:00",
     "id": "01J6XK5R7N4Q2V3XH65992TQV"
   },
   "log": [
@@ -130,7 +130,7 @@ Example:
 ```
 {
   "event": {
-    "timestamp": "2026-07-12T12:00:00.000Z",
+    "timestamp": "2026-07-12T12:00:00.000+00:00",
     "id": "01J6XK5R7N4Q2V3XH65992TQV"
   }
 }
@@ -253,7 +253,7 @@ drop. It is constructed via `WideLogGuard::builder().build()`:
 
 | Method | Description | Default |
 | --- | --- | --- |
-| `with_timezone(tz: chrono_tz::Tz)` | Timezone for timestamp formatting | `chrono_tz::Tz::UTC` |
+| `with_timezone(tz: jiff::tz::TimeZone)` | Timezone for timestamp formatting | `TimeZone::UTC` |
 | `with_id(F: FnOnce() -> String)` | Custom ID generator closure | ULID via `ulid` crate |
 | `with_uuid()` | Use UUIDv4 for ID (requires `uuid` feature) | — |
 | `with_emit(F: FnOnce(&WideEvent))` | Custom emit function | `default_emit` (direct serialize + non-blocking stdout) |

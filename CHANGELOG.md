@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-19
+
+### Changed
+- **Breaking:** `.with_timezone(...)` on the builder now takes a
+  `jiff::tz::TimeZone` instead of a `chrono_tz::Tz`. Named zones
+  resolve at runtime with `TimeZone::get("America/New_York")`
+  (case-insensitive, returns a `Result`) rather than compile-time enum
+  variants, and the default stays UTC (`TimeZone::UTC`). See
+  "Migrating to 0.9 from 0.8" in `MIGRATING.md`.
+- **Breaking:** `wide_log::__re_exports_core` re-exports `jiff`
+  instead of `chrono` and `chrono_tz`. Code that reached those crates
+  through the re-export must use `jiff` or add its own dependency.
+- `wide-log-macros` dependency updated to 0.9.0; the generated builder
+  field, `with_timezone` parameter, and `ScopedGuard::new_with_tz`
+  defaults reference `::wide_log::__re_exports_core::jiff::tz::TimeZone`.
+- The emitted `timestamp` format is unchanged: an RFC 3339 string with
+  a numeric offset (`+00:00` for the UTC default, never `Z`).
+
+### Security
+- Upgraded `tokio` 1.53.1 → 1.54.1 (manifest floor `1.53.3`),
+  patching RUSTSEC-2026-0386 (unsound `tokio::io::unix::AsyncFd`
+  constructors; none are used by this crate, so no code change was
+  required).
+- Replaced the unmaintained `chrono` (RUSTSEC-2026-0543) and
+  `chrono-tz` (RUSTSEC-2026-0555) with `jiff` 1.0.1, the replacement
+  both advisories recommend. `cargo audit` reports zero findings for
+  the workspace lock file.
+
 ## [0.8.1] - 2026-09-10
 
 ### Added

@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "wide-log"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["David Grantham <dwg@linuxprogrammer.org>"]
 edition = "2024"
 rust-version = "1.99.1"
@@ -15,10 +15,9 @@ readme = "README.md"
 repository = "https://github.com/dhuseby/wide-log"
 
 [dependencies]
-chrono = "0.4"
-chrono-tz = "0.10"
 faststr = "=0.2.34"
 itoa = "1"
+jiff = "1"
 ryu = "1"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
@@ -26,10 +25,10 @@ smallvec = { version = "1", features = ["union", "serde"] }
 sonic-rs = "=0.5.8"
 thiserror = "2"
 ulid = "3"
-wide-log-macros = { version = "0.8.0", path = "wide-log-macros" }
+wide-log-macros = { version = "0.9.0", path = "wide-log-macros" }
 
 # optional
-tokio = { version = "1", features = ["rt"], optional = true }
+tokio = { version = "1.53.3", features = ["rt"], optional = true }
 tower = { version = "0", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
@@ -80,7 +79,7 @@ criterion = { version = "0", default-features = false, features = ["cargo_bench_
 # `tests/loom_*` tests still build because the test target
 # only depends on the dev-deps that *are* active for that cfg.)
 [target.'cfg(not(loom))'.dev-dependencies]
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "io-util"] }
+tokio = { version = "1.53.3", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "io-util"] }
 axum = { version = "0", default-features = false, features = ["http1", "tokio"] }
 
 # loom is only pulled in for `RUSTFLAGS="--cfg loom"` runs.

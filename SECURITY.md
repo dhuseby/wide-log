@@ -4,12 +4,13 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.6.x   | :white_check_mark: |
-| < 0.6.0 | :x:                |
+| 0.9.x   | :white_check_mark: |
+| 0.8.x   | :white_check_mark: |
+| < 0.8.0 | :x:                |
 
-`wide-log` is a pre-1.0 crate. As a matter of policy, only the most
-recent minor version receives security fixes. Users are encouraged
-to track `0.6.x` once it ships.
+`wide-log` is a pre-1.0 crate. As a matter of policy, security fixes
+target the two most recent minor versions. Users are encouraged
+to track `0.9.x`.
 
 ## Reporting a Vulnerability
 
@@ -66,7 +67,7 @@ application never emitted.
 
 Out-of-scope:
 
-- Issues in the `tokio`, `tracing`, `chrono`, `ulid`, `sonic-rs`,
+- Issues in the `tokio`, `tracing`, `jiff`, `ulid`, `sonic-rs`,
   `faststr`, `smallvec`, or other upstream dependencies. Please
   report those to the upstream maintainers.
 - Resource exhaustion caused by intentionally malicious logging
