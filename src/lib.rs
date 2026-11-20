@@ -100,9 +100,9 @@
 //! let _guard = WideLogGuard::builder().build();
 //!
 //! // Custom timezone
-//! use chrono_tz::Tz;
+//! use jiff::tz::TimeZone;
 //! let _guard = WideLogGuard::builder()
-//!     .with_timezone(Tz::America__New_York)
+//!     .with_timezone(TimeZone::get("America/New_York").expect("valid IANA time zone"))
 //!     .build();
 //!
 //! // Custom ID generator
@@ -326,8 +326,7 @@ pub mod __re_exports {
 }
 
 pub mod __re_exports_core {
-    pub use chrono;
-    pub use chrono_tz;
+    pub use jiff;
     pub use ulid;
 }
 

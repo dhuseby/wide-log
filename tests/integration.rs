@@ -254,9 +254,11 @@ fn event_id_custom() {
 #[test]
 fn event_timestamp_timezone() {
     let (captured, emit) = capture();
+    let tz =
+        jiff::tz::TimeZone::get("America/New_York").expect("valid IANA time zone America/New_York");
     let _guard = WideLogGuard::builder()
         .with_emit(emit)
-        .with_timezone(chrono_tz::Tz::America__New_York)
+        .with_timezone(tz)
         .build();
 
     drop(_guard);
@@ -267,6 +269,35 @@ fn event_timestamp_timezone() {
         ts.contains("-04:00") || ts.contains("-05:00"),
         "timestamp should reflect America/New_York offset: {ts}"
     );
+    assert!(
+        !ts.contains('['),
+        "timestamp should not carry an RFC 9557 zone suffix: {ts}"
+    );
+    let _: jiff::Timestamp = ts
+        .parse()
+        .expect("event.timestamp should parse as an RFC 3339 jiff::Timestamp");
+}
+
+#[test]
+fn event_timestamp_utc_numeric_offset() {
+    let (captured, emit) = capture();
+    let _guard = WideLogGuard::builder().with_emit(emit).build();
+
+    drop(_guard);
+
+    let parsed = parse(&captured);
+    let ts = parsed["event"]["timestamp"].as_str().unwrap();
+    assert!(
+        ts.ends_with("+00:00"),
+        "default UTC timestamp should end with a numeric +00:00 offset, not Z: {ts}"
+    );
+    assert!(
+        !ts.contains('['),
+        "timestamp should not carry an RFC 9557 zone suffix: {ts}"
+    );
+    let _: jiff::Timestamp = ts
+        .parse()
+        .expect("event.timestamp should parse as an RFC 3339 jiff::Timestamp");
 }
 
 #[test]

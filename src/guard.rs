@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
 
 use crate::key::Key;
 use crate::value::Value;
@@ -31,7 +31,7 @@ where
 {
     event: WideEvent<K>,
     start: Instant,
-    tz: Tz,
+    tz: TimeZone,
     emit_fn: Option<F>,
 }
 
@@ -42,7 +42,7 @@ where
     /// Creates a new guard with the given emit function and timezone.
     ///
     /// The timezone is used to format the timestamp set on drop.
-    pub fn new_with_tz(emit_fn: F, tz: Tz) -> Self {
+    pub fn new_with_tz(emit_fn: F, tz: TimeZone) -> Self {
         Self {
             event: WideEvent::new(),
             start: Instant::now(),
@@ -74,7 +74,7 @@ where
     /// `K::TIMESTAMP_PATH` to the current UTC time as RFC 3339, and
     /// calls `emit_fn`.
     pub(crate) fn new(emit_fn: F) -> Self {
-        Self::new_with_tz(emit_fn, Tz::UTC)
+        Self::new_with_tz(emit_fn, TimeZone::UTC)
     }
 
     /// Creates a new guard with the given emit function, timezone, and a
@@ -86,7 +86,7 @@ where
     /// [`WideEvent::new_with_warnings`]: crate::WideEvent::new_with_warnings
     pub(crate) fn new_with_warnings(
         emit_fn: F,
-        tz: Tz,
+        tz: TimeZone,
         on_type_conflict: crate::wide_event::ConflictFn<K>,
     ) -> Self {
         Self {
@@ -194,14 +194,22 @@ where
             if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(dur_idx) {
                 obj.add(K::DURATION_PATH[1], duration_val);
             }
-            let now = chrono::Utc::now().with_timezone(&self.tz);
+            let now = jiff::Timestamp::now().to_zoned_datetime(self.tz.clone());
+            let ts = now
+                .timestamp()
+                .display_with_offset(now.offset())
+                .to_string();
             if let Some(Some(Value::Object(obj))) = self.event.values.get_mut(ts_idx) {
-                obj.add(K::TIMESTAMP_PATH[1], now.to_rfc3339());
+                obj.add(K::TIMESTAMP_PATH[1], ts);
             }
         } else {
             self.event.add_path(K::DURATION_PATH, duration_val);
-            let now = chrono::Utc::now().with_timezone(&self.tz);
-            self.event.add_path(K::TIMESTAMP_PATH, now.to_rfc3339());
+            let now = jiff::Timestamp::now().to_zoned_datetime(self.tz.clone());
+            let ts = now
+                .timestamp()
+                .display_with_offset(now.offset())
+                .to_string();
+            self.event.add_path(K::TIMESTAMP_PATH, ts);
         }
         if let Some(emit) = self.emit_fn.take() {
             emit(&self.event);
@@ -286,7 +294,7 @@ mod tests {
         }
 
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, cb);
+        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, TimeZone::UTC, cb);
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);
         drop(g);
@@ -297,9 +305,10 @@ mod tests {
     #[test]
     fn guard_new_with_warnings_callback_can_mutate_event() {
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, _key| {
-            event.add(TestKey::Flag, true);
-        });
+        let mut g =
+            ScopedGuard::<TestKey, _>::new_with_warnings(emit, TimeZone::UTC, |event, _key| {
+                event.add(TestKey::Flag, true);
+            });
         g.add(TestKey::Details, 42u64);
         g.object(TestKey::Details);
         drop(g);
@@ -313,24 +322,25 @@ mod tests {
         use smallvec::smallvec;
 
         let (slot, emit) = capture_json();
-        let mut g = ScopedGuard::<TestKey, _>::new_with_warnings(emit, Tz::UTC, |event, key| {
-            let warning = format!("{} type conflict", key.as_str());
-            let idx = TestKey::Tag.as_index();
-            // Check if there's already an array at Tag
-            let existing = event.values.get(idx).and_then(|v| v.as_ref());
-            if let Some(v) = existing
-                && let Some(arr) = v.as_array_ref()
-            {
-                let mut new_arr = arr.clone();
-                new_arr.push(Value::from(warning));
-                event.add(TestKey::Tag, Value::from_array(new_arr));
-                return;
-            }
-            event.add(
-                TestKey::Tag,
-                Value::from_array(smallvec![Value::from(warning)]),
-            );
-        });
+        let mut g =
+            ScopedGuard::<TestKey, _>::new_with_warnings(emit, TimeZone::UTC, |event, key| {
+                let warning = format!("{} type conflict", key.as_str());
+                let idx = TestKey::Tag.as_index();
+                // Check if there's already an array at Tag
+                let existing = event.values.get(idx).and_then(|v| v.as_ref());
+                if let Some(v) = existing
+                    && let Some(arr) = v.as_array_ref()
+                {
+                    let mut new_arr = arr.clone();
+                    new_arr.push(Value::from(warning));
+                    event.add(TestKey::Tag, Value::from_array(new_arr));
+                    return;
+                }
+                event.add(
+                    TestKey::Tag,
+                    Value::from_array(smallvec![Value::from(warning)]),
+                );
+            });
         g.add(TestKey::Details, true);
         g.object(TestKey::Details);
         drop(g);
@@ -372,7 +382,8 @@ mod tests {
     #[test]
     fn guard_timestamp_reflects_timezone() {
         let (slot, emit) = capture_json();
-        let g = ScopedGuard::<TestKey, _>::new_with_tz(emit, Tz::America__New_York);
+        let tz = TimeZone::get("America/New_York").expect("valid IANA time zone America/New_York");
+        let g = ScopedGuard::<TestKey, _>::new_with_tz(emit, tz);
         drop(g);
         let json = slot.lock().unwrap().clone().unwrap();
         let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();

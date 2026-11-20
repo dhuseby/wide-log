@@ -337,7 +337,7 @@ async fn middleware_with_preset_applies_to_request() {
 async fn scope_emits_on_cancellation() {
     // When a `scope` future is cancelled (dropped without being polled
     // to completion), the `ScopedGuard` it owns should still drop and
-    // emit, just like a synchronous guard. Verify this with a
+    // emit, just like a sync guard. Verify this with a
     // `tokio::select!` race.
     let (slot, emit) = capture();
 

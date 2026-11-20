@@ -903,7 +903,7 @@ impl GenContext {
             pub struct WideLogGuardBuilder<
                 F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static = fn(&::wide_log::WideEvent<EventKey>),
             > {
-                tz: ::wide_log::__re_exports_core::chrono_tz::Tz,
+                tz: ::wide_log::__re_exports_core::jiff::tz::TimeZone,
                 id_fn: ::std::boxed::Box<dyn FnOnce() -> String + Send>,
                 emit_fn: F,
                 /// Optional closure called on `build()` / `scope()` after the
@@ -925,7 +925,7 @@ impl GenContext {
             impl WideLogGuardBuilder<fn(&::wide_log::WideEvent<EventKey>)> {
                 fn new() -> Self {
                     Self {
-                        tz: ::wide_log::__re_exports_core::chrono_tz::Tz::UTC,
+                        tz: ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC,
                         id_fn: #default_id_fn,
                         emit_fn: default_emit,
                         preset: ::std::option::Option::None,
@@ -936,7 +936,7 @@ impl GenContext {
             impl<F: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static>
                 WideLogGuardBuilder<F>
             {
-                pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::chrono_tz::Tz) -> Self {
+                pub fn with_timezone(mut self, tz: ::wide_log::__re_exports_core::jiff::tz::TimeZone) -> Self {
                     self.tz = tz;
                     self
                 }
@@ -1203,7 +1203,7 @@ impl GenContext {
                         buf.clone()
                     });
                     let mut inner = ::std::boxed::Box::new(
-                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
+                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC),
                     );
                     {
                         use ::std::ops::DerefMut;
@@ -1246,7 +1246,7 @@ impl GenContext {
                         buf.clone()
                     });
                     let mut inner = ::std::boxed::Box::new(
-                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::chrono_tz::Tz::UTC),
+                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC),
                     );
                     {
                         use ::std::ops::DerefMut;
