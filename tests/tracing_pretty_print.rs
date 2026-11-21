@@ -25,11 +25,40 @@ fn cargo_bin() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
+/// Helper: spawn the inner `cargo` the way the host arch needs.
+///
+/// An x86_64 test binary on an arm64 macOS host runs under Rosetta, and the
+/// translation is sticky for every descendant process: the inner `cargo run`
+/// runs translated too, so the host-toolchain link of the example lands on the
+/// translated `xcrun` and `cc`, which cannot load the arm64-only `libxcrun`
+/// and the link fails. When the test process is itself translated, route the
+/// inner `cargo` through `arch -arm64` — that resets the tree to native arm64,
+/// the example links with the native toolchain, and it runs natively.
+#[cfg(target_os = "macos")]
+fn inner_cargo_command() -> Command {
+    let translated = Command::new("sysctl")
+        .args(["-n", "sysctl.proc_translated"])
+        .output()
+        .is_ok_and(|out| out.status.success() && out.stdout.trim_ascii() == b"1");
+    if translated {
+        let mut command = Command::new("arch");
+        command.arg("-arm64").arg(cargo_bin());
+        command
+    } else {
+        Command::new(cargo_bin())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn inner_cargo_command() -> Command {
+    Command::new(cargo_bin())
+}
+
 /// Run the `pretty_print` example (with `--features tracing`, because the
 /// example target requires the feature), returning captured stdout and
 /// exit code. Mirrors the subprocess pattern in `tests/stdout_emit.rs`.
 fn run_pretty_print_example() -> (String, i32) {
-    let output = Command::new(cargo_bin())
+    let output = inner_cargo_command()
         .args([
             "run",
             "--example",
