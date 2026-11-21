@@ -22,7 +22,7 @@ ryu = "1"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
 smallvec = { version = "1", features = ["union", "serde"] }
-sonic-rs = "=0.5.8"
+sonic-rs = "=0.5.11"
 thiserror = "2"
 ulid = "3"
 wide-log-macros = { version = "0.9.0", path = "wide-log-macros" }
