@@ -81,6 +81,9 @@ jobs:
           - target: aarch64-apple-darwin
             rust: stable
             run-tests: true
+          - target: x86_64-apple-darwin
+            rust: stable
+            run-tests: true
     runs-on: [self-hosted, macos, arm64]
 
     steps:
