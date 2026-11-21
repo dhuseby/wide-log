@@ -35,10 +35,10 @@ jobs:
             run-tests: true
           - target: aarch64-unknown-linux-gnu
             rust: nightly
-            run-tests: false
+            run-tests: true
           - target: riscv64gc-unknown-linux-gnu
             rust: nightly
-            run-tests: false
+            run-tests: true
     runs-on: [self-hosted, linux, x64]
 
     # The runner image ships cross std for the aarch64 and riscv64gc gnu
@@ -53,6 +53,7 @@ jobs:
         if: matrix.run-tests
         uses: dtolnay/rust-toolchain@stable
         with:
+          targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
       - name: Check Code Format
@@ -61,14 +62,14 @@ jobs:
 
       - name: Code Lint
         if: matrix.run-tests
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
 
       - name: Build
         run: cargo +${{ matrix.rust }} build --verbose --all-features --target ${{ matrix.target }}
 
       - name: Run tests
         if: matrix.run-tests
-        run: cargo test --verbose --all-features
+        run: cargo +${{ matrix.rust }} test --verbose --all-features --target ${{ matrix.target }}
 
   build_macos:
     needs: msrv
@@ -78,7 +79,8 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-          - target: x86_64-apple-darwin
+            rust: stable
+            run-tests: true
     runs-on: [self-hosted, macos, arm64]
 
     steps:
@@ -88,9 +90,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Check Code Format
+        if: matrix.run-tests
+        run: cargo fmt --all -- --check
+
+      - name: Code Lint
+        if: matrix.run-tests
+        run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
 
       - name: Build
-        run: cargo build --target ${{ matrix.target }} --release --all-features
+        run: cargo +${{ matrix.rust }} build --verbose --all-features --target ${{ matrix.target }}
+
+      - name: Run tests
+        if: matrix.run-tests
+        run: cargo +${{ matrix.rust }} test --verbose --all-features --target ${{ matrix.target }}
 
   coverage:
     needs: [build_linux, build_macos]
