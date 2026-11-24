@@ -1385,6 +1385,7 @@ dependencies = [
  "itoa",
  "jiff",
  "loom",
+ "pin-project-lite",
  "rustc-hash",
  "ryu",
  "serde",

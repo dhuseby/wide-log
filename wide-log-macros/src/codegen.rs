@@ -825,13 +825,12 @@ impl GenContext {
                     __wl_log_hook,
                     TASK_EVENT.scope(cell, f),
                 )
-                .await
             }
         } else {
             // The hook registry compiles only with the feature off; in
             // tracing mode the task-local event scope runs unwrapped.
             quote! {
-                TASK_EVENT.scope(cell, f).await
+                TASK_EVENT.scope(cell, f)
             }
         };
 
@@ -1186,39 +1185,33 @@ impl GenContext {
             };
 
             let scope_fns = quote! {
-                pub async fn scope<F, E>(emit_fn: E, f: F) -> F::Output
+                /// Runs `f` inside a new wide event that `emit_fn` receives
+                /// when the scope ends.
+                ///
+                /// The event is built on the first poll of the returned
+                /// future. The event is emitted when that future completes
+                /// or, after its first poll, is dropped.
+                pub fn scope<F, E>(
+                    emit_fn: E,
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                 {
-                    let id_str = ULID_BUF.with(|buf| {
-                        let mut buf = buf.borrow_mut();
-                        buf.clear();
-                        use ::std::fmt::Write;
-                        let _ = write!(
-                            &mut *buf,
-                            "{}",
-                            ::wide_log::__re_exports_core::ulid::Ulid::generate()
-                        );
-                        buf.clone()
-                    });
-                    let mut inner = ::std::boxed::Box::new(
-                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC),
-                    );
-                    {
-                        use ::std::ops::DerefMut;
-                        let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
-                        #(#default_stmts)*
-                        event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
-                    }
-                    let cell = ::wide_log::ContextCell::new();
-                    cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
-                    let _inner = inner;
-                    #hook_scope_wrap
+                    scope_with_defaults(emit_fn, |_| {}, f)
                 }
 
-                pub async fn scope_default<F: ::std::future::Future>(f: F) -> F::Output {
-                    scope(default_emit, f).await
+                // The `scope_default*` functions only forward their
+                // arguments, so they are plain `fn`s that return the inner
+                // future. An `async fn` that awaits `f` stores `f` twice
+                // (as the captured argument and inside the awaited
+                // future), so each such layer adds one more copy of `f` to
+                // the size of the returned future.
+                pub fn scope_default<F: ::std::future::Future>(
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output> {
+                    scope(default_emit, f)
                 }
 
                 /// Like `scope()` but applies a preset closure to the event
@@ -1228,62 +1221,79 @@ impl GenContext {
                 /// or constructed inline. Use this to hoist per-connection
                 /// constants (service name, version, etc.) out of the
                 /// per-request `wl_set!` path. See issue #24.
-                pub async fn scope_with_defaults<F, E, P>(emit_fn: E, preset: P, f: F) -> F::Output
+                // This is deliberately a plain `fn` that returns a
+                // hand-written future. An `async fn` that awaits `f` stores
+                // `f` twice (as the captured argument and inside the awaited
+                // future), which doubles the size of the returned future.
+                // `ScopeFuture` preserves first-poll initialization while
+                // storing `f` once.
+                pub fn scope_with_defaults<F, E, P>(
+                    emit_fn: E,
+                    preset: P,
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                     E: FnOnce(&::wide_log::WideEvent<EventKey>) + Send + 'static,
                     P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
                 {
-                    let id_str = ULID_BUF.with(|buf| {
-                        let mut buf = buf.borrow_mut();
-                        buf.clear();
-                        use ::std::fmt::Write;
-                        let _ = write!(
-                            &mut *buf,
-                            "{}",
-                            ::wide_log::__re_exports_core::ulid::Ulid::generate()
+                    ::wide_log::__macro_internals::ScopeFuture::new(move || {
+                        let id_str = ULID_BUF.with(|buf| {
+                            let mut buf = buf.borrow_mut();
+                            buf.clear();
+                            use ::std::fmt::Write;
+                            let _ = write!(
+                                &mut *buf,
+                                "{}",
+                                ::wide_log::__re_exports_core::ulid::Ulid::generate()
+                            );
+                            buf.clone()
+                        });
+                        let mut inner = ::std::boxed::Box::new(
+                            ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC),
                         );
-                        buf.clone()
-                    });
-                    let mut inner = ::std::boxed::Box::new(
-                        ::wide_log::ScopedGuard::new_with_tz(emit_fn, ::wide_log::__re_exports_core::jiff::tz::TimeZone::UTC),
-                    );
-                    {
-                        use ::std::ops::DerefMut;
-                        let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
-                        #(#default_stmts)*
-                        preset(event);
-                        event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
-                    }
-                    let cell = ::wide_log::ContextCell::new();
-                    cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
-                    let _inner = inner;
-                    #hook_scope_wrap
+                        {
+                            use ::std::ops::DerefMut;
+                            let event: &mut ::wide_log::WideEvent<EventKey> = inner.deref_mut();
+                            #(#default_stmts)*
+                            preset(event);
+                            event.add_path(<EventKey as ::wide_log::Key>::ID_PATH, id_str);
+                        }
+                        let cell = ::wide_log::ContextCell::new();
+                        cell.replace(::wide_log::ScopedGuard::event_ptr(&inner) as *mut _);
+                        // `ScopeFuture` drops the scoped future before the
+                        // guard, so the event outlives every use of the
+                        // pointer in `cell`.
+                        (#hook_scope_wrap, inner)
+                    })
                 }
 
                 /// Like `scope_default()` but applies a preset closure
                 /// wrapped in an `Arc`. This is the variant used by the
                 /// `WideLogLayer` middleware and by callers that share a
                 /// preset across multiple scopes.
-                pub async fn scope_default_with_defaults_arc<F>(
+                pub fn scope_default_with_defaults_arc<F>(
                     preset: ::std::sync::Arc<
                         dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
                     >,
                     f: F,
-                ) -> F::Output
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                 {
-                    scope_with_defaults(default_emit, move |ev| preset(ev), f).await
+                    scope_with_defaults(default_emit, move |ev| preset(ev), f)
                 }
 
                 /// Like `scope_default()` but applies a preset closure.
-                pub async fn scope_default_with_defaults<F, P>(preset: P, f: F) -> F::Output
+                pub fn scope_default_with_defaults<F, P>(
+                    preset: P,
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                     P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
                 {
-                    scope_with_defaults(default_emit, preset, f).await
+                    scope_with_defaults(default_emit, preset, f)
                 }
             };
 
@@ -1404,10 +1414,13 @@ impl GenContext {
                         F: ::std::future::Future<Output = Result<ResBody, Err>> + Send + 'static,
                     {
                         let inner_fut: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = Result<ResBody, Err>> + Send>> =
+                            // `inner` goes to the scope as is. An
+                            // `async move { inner.await }` wrapper would
+                            // store `inner` twice.
                             if let ::std::option::Option::Some(p) = preset {
-                                ::std::boxed::Box::pin(scope_default_with_defaults_arc(p, async move { inner.await }))
+                                ::std::boxed::Box::pin(scope_default_with_defaults_arc(p, inner))
                             } else {
-                                ::std::boxed::Box::pin(scope_default(async move { inner.await }))
+                                ::std::boxed::Box::pin(scope_default(inner))
                             };
                         Self { inner: inner_fut }
                     }

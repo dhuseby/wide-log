@@ -220,6 +220,8 @@ pub(crate) mod wide_event;
 
 #[cfg(feature = "tokio")]
 pub(crate) mod middleware;
+#[cfg(feature = "tokio")]
+pub(crate) mod scope_future;
 
 pub use error::Error;
 pub use guard::ScopedGuard;
@@ -262,6 +264,9 @@ pub mod __macro_internals {
     // task's hook stack.
     #[cfg(all(not(feature = "tracing"), feature = "tokio"))]
     pub use crate::hook_registry::scope_log_hook;
+    // The future type that the async `scope()` family returns.
+    #[cfg(feature = "tokio")]
+    pub use crate::scope_future::ScopeFuture;
 }
 
 pub mod stdout_emit;

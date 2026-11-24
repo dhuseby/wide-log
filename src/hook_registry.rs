@@ -62,10 +62,18 @@ tokio::task_local! {
 /// restores the previous stack on completion, on cancellation (the scope
 /// future's drop re-enters the task-local), and during unwinding, so no
 /// separate drop guard is needed.
+///
+/// This is a plain `fn` that returns the task-local scope future, not an
+/// `async fn`. An `async fn` that awaits `f` stores `f` twice (as the
+/// captured argument and inside the awaited scope future), which doubles
+/// the size of the returned future.
 #[cfg(feature = "tokio")]
 #[inline]
-pub async fn scope_log_hook<F: std::future::Future>(hook: LogHook, f: F) -> F::Output {
-    TASK_LOG_HOOKS.scope(RefCell::new(vec![hook]), f).await
+pub fn scope_log_hook<F: std::future::Future>(
+    hook: LogHook,
+    f: F,
+) -> impl std::future::Future<Output = F::Output> {
+    TASK_LOG_HOOKS.scope(RefCell::new(vec![hook]), f)
 }
 
 /// Number of hooks on the innermost active stack for the calling context:
@@ -444,6 +452,20 @@ mod tests {
         assert_eq!(
             *SCOPE_CALLS.lock().unwrap(),
             vec![("info", "from the scoped task".to_string())]
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn scope_log_hook_stores_the_wrapped_future_once() {
+        const BIG_SIZE: usize = 4096;
+        fn noop_hook(_level: &'static str, _message: &str) {}
+
+        let wrapped = std::future::ready([0u8; BIG_SIZE]);
+        let size = std::mem::size_of_val(&scope_log_hook(noop_hook, wrapped));
+        assert!(
+            size < 2 * BIG_SIZE,
+            "scope_log_hook future is {size} bytes for a {BIG_SIZE}-byte future"
         );
     }
 }
