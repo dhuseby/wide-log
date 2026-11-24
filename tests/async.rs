@@ -556,10 +556,10 @@ async fn builder_with_preset_propagates_through_with_emit() {
 // ---- future size ----
 
 // The futures returned by the `scope()` family and by the middleware must
-// not store extra copies of the future they wrap. An `async fn` (or
-// `async` block) that awaits a future it took as an argument stores that
-// future twice: once as the captured argument and once as the awaited
-// value. These tests keep such a layer from coming back unnoticed.
+// store the future they wrap exactly once. An `async fn` (or `async`
+// block) that awaits a future it took as an argument stores that future
+// twice: once as the captured argument and once as the awaited value.
+// These tests keep such a layer from coming back unnoticed.
 
 const BIG_SIZE: usize = 4096;
 
@@ -638,8 +638,8 @@ fn scope_future_sizes() -> Vec<(&'static str, usize)> {
 }
 
 #[test]
-fn scope_futures_store_at_most_one_extra_copy_of_the_wrapped_future() {
-    let limit = 3 * BIG_SIZE;
+fn scope_futures_store_the_wrapped_future_once() {
+    let limit = BIG_SIZE + BIG_SIZE / 2;
     let too_big: Vec<_> = scope_future_sizes()
         .into_iter()
         .filter(|(_, size)| *size >= limit)
@@ -660,4 +660,47 @@ fn scope_dropped_unpolled_does_not_emit() {
         slot.lock().unwrap().is_none(),
         "an unpolled scope future must not emit an event"
     );
+}
+
+#[test]
+fn scope_emits_on_drop_after_a_caught_poll_panic() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::task::{Context, Waker};
+
+    let (slot, emit) = capture();
+    let mut future = Box::pin(scope(emit, async {
+        panic!("inner poll panic");
+    }));
+    let mut cx = Context::from_waker(Waker::noop());
+
+    let poll = catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut cx)));
+    assert!(poll.is_err());
+    assert!(
+        slot.lock().unwrap().is_none(),
+        "a caught poll panic retains the event until the scope future drops"
+    );
+
+    drop(future);
+    assert!(
+        slot.lock().unwrap().is_some(),
+        "dropping the panicked scope future must emit its event"
+    );
+}
+
+#[tokio::test]
+async fn scope_with_defaults_runs_preset_on_first_poll() {
+    // The scope's setup, which includes the preset, runs on the first poll
+    // of the scope future and not when `scope_with_defaults()` is called.
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let preset_ran = Arc::new(AtomicBool::new(false));
+    let flag = preset_ran.clone();
+    let fut = scope_with_defaults(|_| {}, move |_| flag.store(true, Ordering::SeqCst), async {
+    });
+    assert!(
+        !preset_ran.load(Ordering::SeqCst),
+        "the preset must not run before the first poll"
+    );
+    fut.await;
+    assert!(preset_ran.load(Ordering::SeqCst));
 }
