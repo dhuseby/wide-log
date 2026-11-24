@@ -552,3 +552,112 @@ async fn builder_with_preset_propagates_through_with_emit() {
     let parsed: sonic_rs::Value = sonic_rs::from_str(&json).unwrap();
     assert_eq!(parsed["service"]["name"], "propagated");
 }
+
+// ---- future size ----
+
+// The futures returned by the `scope()` family and by the middleware must
+// not store extra copies of the future they wrap. An `async fn` (or
+// `async` block) that awaits a future it took as an argument stores that
+// future twice: once as the captured argument and once as the awaited
+// value. These tests keep such a layer from coming back unnoticed.
+
+const BIG_SIZE: usize = 4096;
+
+/// A future of exactly `BIG_SIZE` bytes that is ready at once.
+struct Big([u8; BIG_SIZE]);
+
+impl Big {
+    fn new() -> Self {
+        Self([0; BIG_SIZE])
+    }
+}
+
+impl Future for Big {
+    type Output = Result<usize, Infallible>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(Ok(self.0.len()))
+    }
+}
+
+#[derive(Clone)]
+struct BigService;
+
+impl Service<String> for BigService {
+    type Response = usize;
+    type Error = Infallible;
+    type Future = Big;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _req: String) -> Self::Future {
+        Big::new()
+    }
+}
+
+/// Sizes in bytes of the futures that wrap a `Big`, by constructor name.
+fn scope_future_sizes() -> Vec<(&'static str, usize)> {
+    let plain = WideLogLayer::new().layer(BigService).call(String::new());
+    let with_preset = WideLogLayer::new()
+        .with_preset(|_| {})
+        .layer(BigService)
+        .call(String::new());
+    vec![
+        ("scope", size_of_val(&scope(|_| {}, Big::new()))),
+        ("scope_default", size_of_val(&scope_default(Big::new()))),
+        (
+            "scope_with_defaults",
+            size_of_val(&scope_with_defaults(|_| {}, |_| {}, Big::new())),
+        ),
+        (
+            "scope_default_with_defaults",
+            size_of_val(&scope_default_with_defaults(|_| {}, Big::new())),
+        ),
+        (
+            "scope_default_with_defaults_arc",
+            size_of_val(&scope_default_with_defaults_arc(
+                Arc::new(|_: &mut wide_log::WideEvent<EventKey>| {}),
+                Big::new(),
+            )),
+        ),
+        // The middleware boxes its future, so measure the boxed value.
+        ("WideLogLayer", size_of_val(&*plain.inner)),
+        (
+            "WideLogLayer::with_preset",
+            size_of_val(&*with_preset.inner),
+        ),
+    ]
+}
+
+#[test]
+fn scope_futures_store_at_most_one_extra_copy_of_the_wrapped_future() {
+    let limit = 3 * BIG_SIZE;
+    let too_big: Vec<_> = scope_future_sizes()
+        .into_iter()
+        .filter(|(_, size)| *size >= limit)
+        .collect();
+    assert!(
+        too_big.is_empty(),
+        "futures that wrap a {BIG_SIZE}-byte future must be under {limit} bytes: {too_big:?}"
+    );
+}
+
+#[test]
+fn scope_dropped_unpolled_does_not_emit() {
+    // The scope's setup runs on the first poll, so a scope future that is
+    // dropped before any poll builds no event and emits nothing.
+    let (slot, emit) = capture();
+    drop(scope(emit, async {}));
+    assert!(
+        slot.lock().unwrap().is_none(),
+        "an unpolled scope future must not emit an event"
+    );
+}

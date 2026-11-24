@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The futures returned by the async `scope()` family and by
+  `WideLogLayer` are smaller. An `async fn` (or `async` block) that
+  awaits a future it took as an argument stores that future twice, so
+  each such layer added one more copy of the wrapped future to the size
+  of the returned future. The layers that only forward their arguments
+  are now plain functions that return the inner future:
+  `scope_default()`, `scope_default_with_defaults()`,
+  `scope_default_with_defaults_arc()`, the internal `scope_log_hook()`,
+  and the `async move` block in the `WideLogLayer` middleware. For a
+  4096-byte wrapped future, `scope()` goes from 12448 to 8304 bytes,
+  `scope_default()` from 16552 to 8304 bytes, and the boxed middleware
+  future from 32936 to 8304 bytes. Callers that `.await` or spawn these
+  functions need no change; behavior is unchanged.
+
+### Added
+- Regression tests for the future sizes in `tests/async.rs` and
+  `src/hook_registry.rs`, and a test that pins the current behavior
+  that a `scope()` future dropped before its first poll emits no event.
+
 ## [0.9.0] - 2026-11-19
 
 ### Changed

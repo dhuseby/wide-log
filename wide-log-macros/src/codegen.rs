@@ -1217,8 +1217,16 @@ impl GenContext {
                     #hook_scope_wrap
                 }
 
-                pub async fn scope_default<F: ::std::future::Future>(f: F) -> F::Output {
-                    scope(default_emit, f).await
+                // The `scope_default*` functions only forward their
+                // arguments, so they are plain `fn`s that return the inner
+                // future. An `async fn` that awaits `f` stores `f` twice
+                // (as the captured argument and inside the awaited
+                // future), so each such layer adds one more copy of `f` to
+                // the size of the returned future.
+                pub fn scope_default<F: ::std::future::Future>(
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output> {
+                    scope(default_emit, f)
                 }
 
                 /// Like `scope()` but applies a preset closure to the event
@@ -1265,25 +1273,28 @@ impl GenContext {
                 /// wrapped in an `Arc`. This is the variant used by the
                 /// `WideLogLayer` middleware and by callers that share a
                 /// preset across multiple scopes.
-                pub async fn scope_default_with_defaults_arc<F>(
+                pub fn scope_default_with_defaults_arc<F>(
                     preset: ::std::sync::Arc<
                         dyn ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync,
                     >,
                     f: F,
-                ) -> F::Output
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                 {
-                    scope_with_defaults(default_emit, move |ev| preset(ev), f).await
+                    scope_with_defaults(default_emit, move |ev| preset(ev), f)
                 }
 
                 /// Like `scope_default()` but applies a preset closure.
-                pub async fn scope_default_with_defaults<F, P>(preset: P, f: F) -> F::Output
+                pub fn scope_default_with_defaults<F, P>(
+                    preset: P,
+                    f: F,
+                ) -> impl ::std::future::Future<Output = F::Output>
                 where
                     F: ::std::future::Future,
                     P: ::std::ops::Fn(&mut ::wide_log::WideEvent<EventKey>) + ::std::marker::Send + ::std::marker::Sync + 'static,
                 {
-                    scope_with_defaults(default_emit, preset, f).await
+                    scope_with_defaults(default_emit, preset, f)
                 }
             };
 
@@ -1404,10 +1415,13 @@ impl GenContext {
                         F: ::std::future::Future<Output = Result<ResBody, Err>> + Send + 'static,
                     {
                         let inner_fut: ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = Result<ResBody, Err>> + Send>> =
+                            // `inner` goes to the scope as is. An
+                            // `async move { inner.await }` wrapper would
+                            // store `inner` twice.
                             if let ::std::option::Option::Some(p) = preset {
-                                ::std::boxed::Box::pin(scope_default_with_defaults_arc(p, async move { inner.await }))
+                                ::std::boxed::Box::pin(scope_default_with_defaults_arc(p, inner))
                             } else {
-                                ::std::boxed::Box::pin(scope_default(async move { inner.await }))
+                                ::std::boxed::Box::pin(scope_default(inner))
                             };
                         Self { inner: inner_fut }
                     }
